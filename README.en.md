@@ -86,5 +86,3 @@ More entry points: [HHS source ledger](references/hhs-sources.md) · [Skills and
 </p>
 
 Institutional AI policy, the student's device and preferences remain unknown; evidence review depth was limited by access conditions and no exhaustive errata sweep was performed; no license file is included — **all rights reserved**. Document structure was validated against local rendering only.
-
-> Note: the institution-specific report template used during development is not included in this public copy, so the template-dependent tests (`test_report_templates`, `test_sections*`, `test_template_api`, parts of `test_egress_api`) fail here until you supply your own template under `templates/`.

@@ -1,0 +1,4 @@
+Clinical Intake Report (Example)
+Original example template authored for psychtool (plain-text source snapshot).
+Sections: Header; Client Details; Reason for Referral; History; Methods; Findings; Summary of Measures; Clinical Impressions; Summary; Recommendations.
+Fields: client_name, client_age, session_dates, report_date, evaluator_name, presenting_concerns, referral_source, referral_reason, methods_used.

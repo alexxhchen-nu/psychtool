@@ -203,7 +203,7 @@ POST /api/workspaces/{case_id}/egress/prepare
 
 ```json
 {
-  "template_id": "ew-report",
+  "template_id": "intake-report",
   "template_version": 1,
   "section_id": "background_information",
   "claim_ids": ["claim-1"],

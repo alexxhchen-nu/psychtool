@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-PKG = ["python", "-m", "psychtool"]
+PKG = [sys.executable, "-m", "psychtool"]
 _ENV_VARS = (
     "PSYCHTOOL_BASE_URL",
     "PSYCHTOOL_MODEL",

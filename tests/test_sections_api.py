@@ -66,11 +66,11 @@ def test_list_claims(tmp_path, monkeypatch):
 def test_section_states_default_empty(tmp_path, monkeypatch):
     _workspace(tmp_path)
     response = _client(tmp_path, monkeypatch).get(
-        "/api/workspaces/case-a/sections", params={"template_id": "ew-report"}
+        "/api/workspaces/case-a/sections", params={"template_id": "intake-report"}
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload[0]["section_id"] == "report_header"
+    assert payload[0]["section_id"] == "header"
     assert all(s["status"] == "empty" for s in payload)
 
 
@@ -78,20 +78,20 @@ def test_put_section_persists(tmp_path, monkeypatch):
     _workspace(tmp_path)
     client = _client(tmp_path, monkeypatch)
     body = {
-        "template_id": "ew-report",
+        "template_id": "intake-report",
         "template_version": 1,
         "text": "draft text",
         "claim_ids": ["c1"],
         "status": "draft",
     }
-    response = client.put("/api/workspaces/case-a/sections/background_information", json=body)
+    response = client.put("/api/workspaces/case-a/sections/history", json=body)
     assert response.status_code == 200
     assert response.json()["version"] == 1
 
     states = client.get(
-        "/api/workspaces/case-a/sections", params={"template_id": "ew-report"}
+        "/api/workspaces/case-a/sections", params={"template_id": "intake-report"}
     ).json()
-    background = next(s for s in states if s["section_id"] == "background_information")
+    background = next(s for s in states if s["section_id"] == "history")
     assert background["status"] == "draft"
     assert background["text"] == "draft text"
     assert background["claim_ids"] == ["c1"]
@@ -101,12 +101,12 @@ def test_put_section_unknown_claim_is_400(tmp_path, monkeypatch):
     _workspace(tmp_path)
     client = _client(tmp_path, monkeypatch)
     body = {
-        "template_id": "ew-report",
+        "template_id": "intake-report",
         "template_version": 1,
         "text": "x",
         "claim_ids": ["missing"],
     }
-    response = client.put("/api/workspaces/case-a/sections/background_information", json=body)
+    response = client.put("/api/workspaces/case-a/sections/history", json=body)
     assert response.status_code == 400
 
 
@@ -143,9 +143,9 @@ def test_generate_endpoint_is_gone_without_calling_model(monkeypatch, tmp_path):
     client = TestClient(create_app())
 
     response = client.post(
-        "/api/workspaces/case-a/sections/background_information/generate",
+        "/api/workspaces/case-a/sections/history/generate",
         json={
-            "template_id": "ew-report",
+            "template_id": "intake-report",
             "template_version": 1,
             "claim_ids": ["c1"],
             "instructions": "write background",

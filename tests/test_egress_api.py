@@ -62,9 +62,9 @@ def _configure(monkeypatch, tmp_path, *, tier="real"):
 
 def _prepare_body():
     return {
-        "template_id": "ew-report",
+        "template_id": "intake-report",
         "template_version": 1,
-        "section_id": "background_information",
+        "section_id": "history",
         "claim_ids": ["claim-1"],
         "instructions": "Write the background section.",
         "purpose": "section_generation",

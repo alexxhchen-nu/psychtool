@@ -478,8 +478,8 @@ def test_builder_request_invalidates_when_claim_material_is_reimported(tmp_path,
         prompt, refs = build_draft_request_input(workspace, **args)
     else:
         prompt, refs = build_section_request_input(
-            workspace, template_id="ew-report", template_version=1,
-            section_id="background_information", **args,
+            workspace, template_id="intake-report", template_version=1,
+            section_id="history", **args,
         )
     config = _cfg(tier="real", base_url="http://127.0.0.1:11434/v1")
     request = prepare_egress_request(

@@ -9,14 +9,14 @@ def test_list_templates_endpoint():
     response = TestClient(create_app()).get("/api/templates")
     assert response.status_code == 200
     payload = response.json()
-    assert [item["template_id"] for item in payload] == ["ew-report"]
+    assert [item["template_id"] for item in payload] == ["intake-report"]
     assert "source_snapshot" not in payload[0]
 
 
 def test_get_template_endpoint():
-    response = TestClient(create_app()).get("/api/templates/ew-report")
+    response = TestClient(create_app()).get("/api/templates/intake-report")
     assert response.status_code == 200
-    assert response.json()["sections"][0]["id"] == "report_header"
+    assert response.json()["sections"][0]["id"] == "header"
 
 
 def test_unknown_template_is_404():

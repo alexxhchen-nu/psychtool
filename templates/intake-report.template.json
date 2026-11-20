@@ -1,0 +1,31 @@
+{
+  "template_id": "intake-report",
+  "version": 1,
+  "report_type": "clinical_intake_example",
+  "title": "Clinical Intake Report (Example)",
+  "source_snapshot": "Intake Report Template.txt",
+  "markdown_file": "Intake Report Template.md",
+  "fields": [
+    {"id": "client_name", "label": "Client name", "required": true, "review_required": true},
+    {"id": "client_age", "label": "Client age", "required": true, "review_required": true},
+    {"id": "session_dates", "label": "Session date(s)", "required": true, "review_required": true},
+    {"id": "report_date", "label": "Report date", "required": true, "review_required": true},
+    {"id": "evaluator_name", "label": "Clinician", "required": true, "review_required": true},
+    {"id": "presenting_concerns", "label": "Presenting concerns", "required": true, "review_required": true},
+    {"id": "referral_source", "label": "Referral source", "required": false, "review_required": true},
+    {"id": "referral_reason", "label": "Referral question", "required": true, "review_required": true},
+    {"id": "methods_used", "label": "Methods used", "required": true, "review_required": true}
+  ],
+  "sections": [
+    {"id": "header", "title": "Header", "required": true, "content_types": ["fixed_text", "field_input"], "allowed_sources": ["human_input"]},
+    {"id": "client_details", "title": "Client Details", "required": true, "content_types": ["field_input", "source_fact"], "allowed_sources": ["human_input", "intake"]},
+    {"id": "reason_for_referral", "title": "Reason for Referral", "required": true, "content_types": ["field_input", "source_fact"], "allowed_sources": ["human_input", "referral", "intake"]},
+    {"id": "history", "title": "History", "required": true, "content_types": ["source_fact"], "allowed_sources": ["interview", "records", "questionnaire"]},
+    {"id": "methods", "title": "Methods", "required": true, "content_types": ["field_input", "source_fact"], "allowed_sources": ["human_input", "session_record"]},
+    {"id": "findings", "title": "Findings", "required": true, "content_types": ["source_fact", "clinical_interpretation"], "allowed_sources": ["behavioral_observation", "measure_results"], "review_gate": "licensed_clinician"},
+    {"id": "measures_table", "title": "Summary of Measures", "required": true, "content_types": ["score_table"], "allowed_sources": ["verified_score_entry"], "review_gate": "licensed_clinician"},
+    {"id": "clinical_impressions", "title": "Clinical Impressions", "required": true, "content_types": ["diagnostic_conclusion"], "allowed_sources": ["interview", "records", "behavioral_observation", "measure_results"], "review_gate": "licensed_clinician"},
+    {"id": "summary", "title": "Summary", "required": true, "content_types": ["source_fact", "clinical_interpretation"], "allowed_sources": ["approved_findings"], "review_gate": "licensed_clinician"},
+    {"id": "recommendations", "title": "Recommendations", "required": true, "content_types": ["recommendation"], "allowed_sources": ["approved_findings", "human_input"], "review_gate": "licensed_clinician"}
+  ]
+}

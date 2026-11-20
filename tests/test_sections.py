@@ -53,7 +53,7 @@ def _add_claim(ws, cid, text="statement"):
 def _save(ws, section_id, text, claim_ids, status="draft", reviewer=None):
     return save_section(
         ws,
-        template_id="ew-report",
+        template_id="intake-report",
         template_version=1,
         section_id=section_id,
         text=text,
@@ -65,8 +65,8 @@ def _save(ws, section_id, text, claim_ids, status="draft", reviewer=None):
 
 def test_save_and_get_roundtrip(ws):
     _add_claim(ws, "c1")
-    _save(ws, "background_information", "draft text", ["c1"])
-    draft = get_section(ws, "ew-report", "background_information")
+    _save(ws, "history", "draft text", ["c1"])
+    draft = get_section(ws, "intake-report", "history")
     assert draft is not None
     assert draft.version == 1
     assert draft.case_id == "case-a"
@@ -76,11 +76,11 @@ def test_save_and_get_roundtrip(ws):
 
 
 def test_section_states_defaults_to_empty_in_template_order(ws):
-    states = section_states(ws, "ew-report")
+    states = section_states(ws, "intake-report")
     assert [s["section_id"] for s in states][:3] == [
-        "report_header",
-        "identifying_information",
-        "reason_for_testing",
+        "header",
+        "client_details",
+        "reason_for_referral",
     ]
     assert all(s["status"] == "empty" for s in states)
     assert states[0]["version"] == 0
@@ -88,14 +88,14 @@ def test_section_states_defaults_to_empty_in_template_order(ws):
 
 def test_repeated_save_increments_version(ws):
     _add_claim(ws, "c1")
-    _save(ws, "background_information", "v1", ["c1"])
-    _save(ws, "background_information", "v2", ["c1"])
-    assert get_section(ws, "ew-report", "background_information").version == 2
+    _save(ws, "history", "v1", ["c1"])
+    _save(ws, "history", "v2", ["c1"])
+    assert get_section(ws, "intake-report", "history").version == 2
 
 
 def test_unknown_claim_rejected(ws):
     with pytest.raises(KeyError, match="claims not in workspace"):
-        _save(ws, "background_information", "text", ["missing"])
+        _save(ws, "history", "text", ["missing"])
 
 
 def test_unknown_section_rejected(ws):
@@ -107,9 +107,9 @@ def test_wrong_template_version_rejected(ws):
     with pytest.raises(ValueError, match="not 99"):
         save_section(
             ws,
-            template_id="ew-report",
+            template_id="intake-report",
             template_version=99,
-            section_id="background_information",
+            section_id="history",
             text="x",
             claim_ids=[],
         )
@@ -117,19 +117,19 @@ def test_wrong_template_version_rejected(ws):
 
 def test_approve_empty_text_rejected(ws):
     with pytest.raises(ValueError, match="empty text"):
-        _save(ws, "background_information", "   ", [], status="approved")
+        _save(ws, "history", "   ", [], status="approved")
 
 
 def test_licensed_clinician_approval_requires_reviewer(ws):
     _add_claim(ws, "c1")
     with pytest.raises(ValueError, match="require a reviewer"):
-        _save(ws, "diagnostic_impressions", "text", ["c1"], status="approved")
+        _save(ws, "clinical_impressions", "text", ["c1"], status="approved")
 
 
 def test_licensed_clinician_approval_with_reviewer_succeeds(ws):
     _add_claim(ws, "c1")
     draft = _save(
-        ws, "diagnostic_impressions", "text", ["c1"], status="approved", reviewer="Dr. X"
+        ws, "clinical_impressions", "text", ["c1"], status="approved", reviewer="Dr. X"
     )
     assert draft.status == "approved"
     assert draft.reviewer == "Dr. X"
@@ -138,7 +138,7 @@ def test_licensed_clinician_approval_with_reviewer_succeeds(ws):
 
 def test_standard_section_approval_without_reviewer_succeeds(ws):
     _add_claim(ws, "c1")
-    draft = _save(ws, "background_information", "text", ["c1"], status="approved")
+    draft = _save(ws, "history", "text", ["c1"], status="approved")
     assert draft.status == "approved"
     assert draft.review_gate == "standard"
 
@@ -149,9 +149,9 @@ def test_build_section_request_input_builds_complete_prompt_and_claim_refs(ws):
 
     prompt, source_refs = build_section_request_input(
         ws,
-        template_id="ew-report",
+        template_id="intake-report",
         template_version=1,
-        section_id="background_information",
+        section_id="history",
         claim_ids=["c1"],
         instructions="Contact evaluator@example.com.",
     )
@@ -169,16 +169,16 @@ def test_build_section_request_input_validates_template_and_section(ws):
     with pytest.raises(ValueError, match="not 99"):
         build_section_request_input(
             ws,
-            template_id="ew-report",
+            template_id="intake-report",
             template_version=99,
-            section_id="background_information",
+            section_id="history",
             claim_ids=[],
             instructions="x",
         )
     with pytest.raises(KeyError, match="not in template"):
         build_section_request_input(
             ws,
-            template_id="ew-report",
+            template_id="intake-report",
             template_version=1,
             section_id="not-a-section",
             claim_ids=[],
@@ -194,9 +194,9 @@ def test_build_section_request_input_unknown_claim_rejected(ws):
     with pytest.raises(KeyError):
         build_section_request_input(
             ws,
-            template_id="ew-report",
+            template_id="intake-report",
             template_version=1,
-            section_id="background_information",
+            section_id="history",
             claim_ids=["missing"],
             instructions="x",
         )
