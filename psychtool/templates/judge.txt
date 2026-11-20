@@ -1,0 +1,20 @@
+# 语义支持判定
+
+请判断：草稿在引用下方「候选陈述」时，是否忠实呈现了其归属、时间与含义（未歪曲、未张冠李戴、未改变强度）。
+
+## 候选陈述
+{statement}
+
+## 来源定位
+{locator}
+
+## 草稿（相关片段）
+{draft_text}
+
+## 判定
+- supported：草稿对该陈述的使用忠实、无歪曲。
+- unsupported：草稿引用该来源却改变了归属、时间、强度或含义。
+- unclear：无法判断。
+
+## 输出（仅 JSON，无其他文字）
+{{"verdict": "supported|unsupported|unclear", "explanation": "一句话说明"}}

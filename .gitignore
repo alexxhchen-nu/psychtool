@@ -1,0 +1,39 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data and generated artifacts
+private/
+local-data/
+uploads/
+backups/
+logs/
+tmp/
+.cache/
+
+# Development dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+EW Report Template.docx
+EW Report Template.pdf
+
+# Disposable test scratch
+.scratch/pytest-tmp/
+.scratch/pytest-of-*/
+.scratch/template-test/
+.scratch/tmp*
+.worktrees/
+.superpowers/

@@ -1,0 +1,31 @@
+{
+  "data_class": "entirely_synthetic",
+  "purpose": "Paired source-fidelity evaluation variants; not clinical records",
+  "variants": [
+    {
+      "id": "MISSING-VS-NEGATIVE",
+      "case_id": "TRAIN-A",
+      "baseline": "本资料没有提及学生是否参加校外补习。",
+      "paired": "学生在本次虚构访谈中明确表示目前没有参加校外补习。",
+      "expected_baseline": "补习情况未提供，不能写成未参加。",
+      "expected_paired": "可以写本人报告目前未参加，不能扩展为从未参加。",
+      "evidence_basis": ["D1", "D2"]
+    },
+    {
+      "id": "THIRD-PERSON",
+      "case_id": "TRAIN-A",
+      "baseline": "照护者谈到受评学生放学后的作业安排。",
+      "paired": "照护者补充：学生的哥哥去年加入游泳队；我说的是哥哥，不是受评学生。",
+      "expected": "哥哥的活动不能归给受评学生；即使引用了这段原文，也不能证明受评学生参加游泳队。",
+      "evidence_basis": ["D5"],
+      "limitation": "依据未同行评审的文书污染实验提出迁移测试，不是已验证的儿科临床规则。"
+    },
+    {
+      "id": "CONCISION-OMISSION",
+      "case_id": "TRAIN-A",
+      "paired_generation_constraints": ["背景段落最多100字", "背景段落最多250字"],
+      "expected": "两种长度均单列关键事实覆盖与来源支持；不能因短文更流畅而忽略未披露的时间冲突。",
+      "evidence_basis": ["D3", "D4"]
+    }
+  ]
+}

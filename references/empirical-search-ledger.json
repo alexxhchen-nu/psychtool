@@ -1,0 +1,47 @@
+{
+  "date": "2026-11-06",
+  "purpose": "Bounded empirical evidence discovery for psychtool product design, not manuscript or systematic review",
+  "backend": "OpenAlex /works via citation-management search_openalex.py",
+  "authentication": "OPENALEX_API_KEY environment variable detected; script uses Authorization header; no value recorded",
+  "date_filter": {
+    "year_start": 2010,
+    "year_end": 2026,
+    "clinical_documentation_year_start": 2023
+  },
+  "query_runs": [
+    {
+      "query": "multi informant assessment children adolescents discrepancies",
+      "output": "references/openalex-multi-informant.json",
+      "returned_records": 10,
+      "requested_limit": 10
+    },
+    {
+      "query": "pediatric neuropsychological assessment performance validity ecological validity",
+      "output": "references/openalex-pediatric-neuropsych.json",
+      "returned_records": 10,
+      "requested_limit": 10
+    },
+    {
+      "query": "large language models clinical documentation hallucinations omissions",
+      "output": "references/openalex-clinical-documentation.json",
+      "returned_records": 10,
+      "requested_limit": 10
+    },
+    {
+      "query": "The validity of the multi-informant approach to assessing child and adolescent mental health",
+      "output": "references/openalex-multi-informant-foundation.json",
+      "returned_records": 5,
+      "requested_limit": 5
+    }
+  ],
+  "total_returned": 35,
+  "unique_records": 35,
+  "verification": "Discovery only. Publisher/PubMed/PMC source review recorded separately in evidence matrices. No Parallel Extract run; no verified_references count under research-lookup definition.",
+  "limitations": [
+    "Top ten results per query; not exhaustive",
+    "OpenAlex abstracts are source metadata, not full-text review",
+    "Normalized exports do not include retraction or correction fields; independent review required",
+    "Parallel CLI and PARALLEL_API_KEY unavailable in initial environment check; user authorized OpenAlex or other sources, used OpenAlex directly",
+    "No individual-level clinical dataset collected"
+  ]
+}

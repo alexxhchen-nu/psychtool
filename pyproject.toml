@@ -1,0 +1,31 @@
+[project]
+name = "psychtool"
+version = "0.1.0"
+description = "Source-traceable clinical writing workspace (research stage, synthetic materials only)"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2",
+  "typer>=0.12",
+  "rich>=13",
+  "textual>=0.80",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+psychtool = "psychtool.cli.app:app"
+psychtool-server = "psychtool.server.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["psychtool*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,202 @@
+"""Per-section report state: versioning, review gates, claim validation."""
+
+import pytest
+
+import psychtool.core.sections as sections_module
+from psychtool.core.workspace import init_workspace
+from psychtool.core.claims import add_claim
+from psychtool.core.sections import (
+    build_section_request_input,
+    get_section,
+    save_section,
+    section_states,
+)
+
+
+_ENV_VARS = (
+    "PSYCHTOOL_BASE_URL",
+    "PSYCHTOOL_MODEL",
+    "PSYCHTOOL_JUDGE_MODEL",
+    "PSYCHTOOL_DATA_TIER",
+    "PSYCHTOOL_API_KEY",
+    "PSYCHTOOL_REDACT",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_psychtool_environment(monkeypatch):
+    for name in _ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def ws(tmp_path):
+    return init_workspace(tmp_path / "case-a", case_id="case-a")
+
+
+def _add_claim(ws, cid, text="statement"):
+    return add_claim(
+        ws,
+        claim_id=cid,
+        source_document_id="doc-1",
+        source_version=1,
+        source_passage_id="p001",
+        provider_role="self_report",
+        observation_setting="intake",
+        record_time="2026-10-01",
+        category="client_statement",
+        topic="history",
+        text=text,
+    )
+
+
+def _save(ws, section_id, text, claim_ids, status="draft", reviewer=None):
+    return save_section(
+        ws,
+        template_id="ew-report",
+        template_version=1,
+        section_id=section_id,
+        text=text,
+        claim_ids=claim_ids,
+        status=status,
+        reviewer=reviewer,
+    )
+
+
+def test_save_and_get_roundtrip(ws):
+    _add_claim(ws, "c1")
+    _save(ws, "background_information", "draft text", ["c1"])
+    draft = get_section(ws, "ew-report", "background_information")
+    assert draft is not None
+    assert draft.version == 1
+    assert draft.case_id == "case-a"
+    assert draft.text == "draft text"
+    assert draft.claim_ids == ["c1"]
+    assert draft.status == "draft"
+
+
+def test_section_states_defaults_to_empty_in_template_order(ws):
+    states = section_states(ws, "ew-report")
+    assert [s["section_id"] for s in states][:3] == [
+        "report_header",
+        "identifying_information",
+        "reason_for_testing",
+    ]
+    assert all(s["status"] == "empty" for s in states)
+    assert states[0]["version"] == 0
+
+
+def test_repeated_save_increments_version(ws):
+    _add_claim(ws, "c1")
+    _save(ws, "background_information", "v1", ["c1"])
+    _save(ws, "background_information", "v2", ["c1"])
+    assert get_section(ws, "ew-report", "background_information").version == 2
+
+
+def test_unknown_claim_rejected(ws):
+    with pytest.raises(KeyError, match="claims not in workspace"):
+        _save(ws, "background_information", "text", ["missing"])
+
+
+def test_unknown_section_rejected(ws):
+    with pytest.raises(KeyError, match="not in template"):
+        _save(ws, "does_not_exist", "text", [])
+
+
+def test_wrong_template_version_rejected(ws):
+    with pytest.raises(ValueError, match="not 99"):
+        save_section(
+            ws,
+            template_id="ew-report",
+            template_version=99,
+            section_id="background_information",
+            text="x",
+            claim_ids=[],
+        )
+
+
+def test_approve_empty_text_rejected(ws):
+    with pytest.raises(ValueError, match="empty text"):
+        _save(ws, "background_information", "   ", [], status="approved")
+
+
+def test_licensed_clinician_approval_requires_reviewer(ws):
+    _add_claim(ws, "c1")
+    with pytest.raises(ValueError, match="require a reviewer"):
+        _save(ws, "diagnostic_impressions", "text", ["c1"], status="approved")
+
+
+def test_licensed_clinician_approval_with_reviewer_succeeds(ws):
+    _add_claim(ws, "c1")
+    draft = _save(
+        ws, "diagnostic_impressions", "text", ["c1"], status="approved", reviewer="Dr. X"
+    )
+    assert draft.status == "approved"
+    assert draft.reviewer == "Dr. X"
+    assert draft.review_gate == "licensed_clinician"
+
+
+def test_standard_section_approval_without_reviewer_succeeds(ws):
+    _add_claim(ws, "c1")
+    draft = _save(ws, "background_information", "text", ["c1"], status="approved")
+    assert draft.status == "approved"
+    assert draft.review_gate == "standard"
+
+
+def test_build_section_request_input_builds_complete_prompt_and_claim_refs(ws):
+    first = _add_claim(ws, "c1", "first version")
+    latest = _add_claim(ws, "c1", "latest version")
+
+    prompt, source_refs = build_section_request_input(
+        ws,
+        template_id="ew-report",
+        template_version=1,
+        section_id="background_information",
+        claim_ids=["c1"],
+        instructions="Contact evaluator@example.com.",
+    )
+
+    assert first.version == 1
+    assert latest.version == 2
+    assert "latest version" in prompt
+    assert "evaluator@example.com" in prompt
+    assert [ref.model_dump() for ref in source_refs] == [
+        {"kind": "claim", "id": "c1", "version": 2}
+    ]
+
+
+def test_build_section_request_input_validates_template_and_section(ws):
+    with pytest.raises(ValueError, match="not 99"):
+        build_section_request_input(
+            ws,
+            template_id="ew-report",
+            template_version=99,
+            section_id="background_information",
+            claim_ids=[],
+            instructions="x",
+        )
+    with pytest.raises(KeyError, match="not in template"):
+        build_section_request_input(
+            ws,
+            template_id="ew-report",
+            template_version=1,
+            section_id="not-a-section",
+            claim_ids=[],
+            instructions="x",
+        )
+
+
+def test_sections_exposes_no_raw_generation_callback():
+    assert not hasattr(sections_module, "generate_section")
+
+
+def test_build_section_request_input_unknown_claim_rejected(ws):
+    with pytest.raises(KeyError):
+        build_section_request_input(
+            ws,
+            template_id="ew-report",
+            template_version=1,
+            section_id="background_information",
+            claim_ids=["missing"],
+            instructions="x",
+        )

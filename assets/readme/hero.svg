@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="t d">
+  <title id="t">psychtool — 来源可溯的临床写作工作区</title>
+  <desc id="d">左侧为项目名与定位，右侧为一张带来源定位的证据索引卡，虚线表示从材料到陈述的溯源路径。</desc>
+  <rect width="1200" height="320" rx="16" fill="#FAF8F2"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="64" y="52" font-size="18" fill="#6E7681">// CLINICAL WRITING · PSYCHOLOGY · RESEARCH STAGE</text>
+    <text x="64" y="270" font-size="18" fill="#6E7681">▰ research + spec  ▱ application (not built)</text>
+  </g>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="64" y="120" font-size="64" font-weight="700" fill="#1F2430">psychtool</text>
+    <text x="64" y="160" font-size="24" fill="#1F2430">来源可溯的临床写作工作区</text>
+    <text x="64" y="196" font-size="20" fill="#6E7681">每条陈述都能回到来源 —— every claim traces back</text>
+    <text x="64" y="240" font-size="20" fill="#1F2430">给没有技术背景的临床培训生；事实与解释由本人及督导审核</text>
+  </g>
+  <line x1="640" y1="200" x2="720" y2="200" stroke="#4C6EF5" stroke-width="2" stroke-dasharray="4 6"/>
+  <polygon points="720,200 710,195 710,210" fill="#4C6EF5"/>
+  <g>
+    <rect x="736" y="72" width="400" height="176" rx="12" fill="#FFFFFF" stroke="#D8DEE4"/>
+    <text x="760" y="104" font-size="18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#6E7681">src: A-Y1 · doc v1 · ¶1</text>
+    <line x1="760" y1="118" x2="1112" y2="118" stroke="#E3E6EA"/>
+    <text x="760" y="148" font-size="19" font-family="-apple-system, 'PingFang SC', sans-serif" fill="#1F2430">「九月开学后作业用时变长…」</text>
+    <text x="760" y="178" font-size="18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#6E7681">informant: 本人 · 访谈练习</text>
+    <rect x="760" y="196" width="176" height="34" rx="8" fill="#EEF2FF"/>
+    <text x="778" y="220" font-size="18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#4C6EF5">claim A-F1 ✓</text>
+    <text x="960" y="220" font-size="18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#6E7681">status: 已核对</text>
+  </g>
+</svg>
