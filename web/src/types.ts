@@ -63,7 +63,7 @@ export interface UploadResult {
   requires_human_review: boolean
 }
 export interface SourceRef { kind: 'claim' | 'material' | 'draft'; id: string; version: number }
-export type EgressStatus = 'prepared' | 'approved' | 'sent' | 'invalidated'
+export type EgressStatus = 'prepared' | 'approved' | 'sent' | 'invalidated' | 'send_interrupted'
 export interface EgressRequest {
   request_id: string
   workspace_id: string

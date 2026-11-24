@@ -8,11 +8,12 @@ from fastapi.testclient import TestClient
 from psychtool.core.workspace import Passage
 from psychtool.server.app import create_app
 from psychtool.store.sqlite_store import SqliteStore
+from tests.conftest import build_client
 
 
 def _client(tmp_path, monkeypatch):
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
-    return TestClient(create_app())
+    return build_client(create_app())
 
 
 def _workspace(tmp_path, monkeypatch):
@@ -140,7 +141,7 @@ def test_generate_endpoint_is_gone_without_calling_model(monkeypatch, tmp_path):
         "http_transport",
         lambda config, envelope: calls.append((config, envelope)),
     )
-    client = TestClient(create_app())
+    client = build_client(create_app())
 
     response = client.post(
         "/api/workspaces/case-a/sections/history/generate",

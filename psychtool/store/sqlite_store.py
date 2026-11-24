@@ -22,6 +22,7 @@ open through ``PRAGMA user_version``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sqlite3
@@ -34,6 +35,7 @@ from typing import Iterator
 from psychtool.core.claims import Claim
 from psychtool.core.sections import SectionDraft
 from psychtool.core.workspace import Material, Passage
+from psychtool.store import audit as _audit
 
 # Mirrors the server-side case-id rule: no path separators, no SQL/LIKE
 # metacharacters, bounded length. Validated before any SQL runs.
@@ -42,7 +44,7 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Mirrors the material-id rule used by the ingest path.
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA_STATEMENTS = (
     """
@@ -136,7 +138,8 @@ _SCHEMA_STATEMENTS = (
         identifier_categories TEXT NOT NULL,
         content_hash          TEXT NOT NULL,
         status                TEXT NOT NULL
-            CHECK (status IN ('prepared', 'approved', 'sent', 'invalidated')),
+            CHECK (status IN ('prepared', 'approved', 'sent', 'invalidated',
+                              'send_interrupted')),
         approval_mode         TEXT CHECK (approval_mode IN ('human', 'synthetic_auto')),
         reviewer              TEXT,
         approval_reason       TEXT,
@@ -148,7 +151,118 @@ _SCHEMA_STATEMENTS = (
         PRIMARY KEY (case_id, request_id)
     )
     """,
+    # Audit log (ADR 0011): append-only, hash-chained, structurally unable to
+    # hold free text. The triggers below block UPDATE/DELETE on the app path.
+    """
+    CREATE TABLE IF NOT EXISTS audit_log (
+        seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id      TEXT,
+        ts           TEXT NOT NULL,
+        action       TEXT NOT NULL,
+        object_type  TEXT NOT NULL,
+        object_id    TEXT NOT NULL,
+        content_hash TEXT,
+        destination  TEXT,
+        prev_hash    TEXT NOT NULL,
+        entry_hash   TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+    BEFORE UPDATE ON audit_log
+    BEGIN
+        SELECT RAISE(ABORT, 'audit log is append-only');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+    BEFORE DELETE ON audit_log
+    BEGIN
+        SELECT RAISE(ABORT, 'audit log is append-only');
+    END
+    """,
 )
+
+# Schema v1 -> v2 (ADR 0011): add the append-only, hash-chained audit log,
+# and rebuild ``egress_requests`` because SQLite cannot alter a CHECK
+# constraint and the v2 status set adds ``send_interrupted``. The rebuild
+# follows the SQLite "12 steps" procedure for schema changes: the migration
+# transaction runs with ``PRAGMA defer_foreign_keys=ON`` (a PRAGMA that works
+# inside a transaction), the rows are copied into a new table, the old table
+# is dropped, the new one is renamed, and ``PRAGMA foreign_key_check``
+# verifies no reference broke before commit. A v1 database from PT-02 opens
+# fine and gains the table plus triggers.
+_MIGRATION_STATEMENTS = {
+    2: (
+        """
+        CREATE TABLE IF NOT EXISTS audit_log (
+            seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id      TEXT,
+            ts           TEXT NOT NULL,
+            action       TEXT NOT NULL,
+            object_type  TEXT NOT NULL,
+            object_id    TEXT NOT NULL,
+            content_hash TEXT,
+            destination  TEXT,
+            prev_hash    TEXT NOT NULL,
+            entry_hash   TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+        BEFORE UPDATE ON audit_log
+        BEGIN
+            SELECT RAISE(ABORT, 'audit log is append-only');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+        BEFORE DELETE ON audit_log
+        BEGIN
+            SELECT RAISE(ABORT, 'audit log is append-only');
+        END
+        """,
+        """
+        CREATE TABLE egress_requests_v2 (
+            case_id               TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+            request_id            TEXT NOT NULL,
+            purpose               TEXT NOT NULL,
+            data_tier             TEXT NOT NULL,
+            provider_base_url     TEXT NOT NULL,
+            envelope              TEXT NOT NULL,
+            source_refs           TEXT NOT NULL,
+            identifier_categories TEXT NOT NULL,
+            content_hash          TEXT NOT NULL,
+            status                TEXT NOT NULL
+                CHECK (status IN ('prepared', 'approved', 'sent', 'invalidated',
+                                  'send_interrupted')),
+            approval_mode         TEXT CHECK (approval_mode IN ('human', 'synthetic_auto')),
+            reviewer              TEXT,
+            approval_reason       TEXT,
+            prepared_at           TEXT NOT NULL,
+            approved_at           TEXT,
+            sent_at               TEXT,
+            send_lock_owner       TEXT,
+            transition_lock_owner TEXT,
+            PRIMARY KEY (case_id, request_id)
+        )
+        """,
+        """
+        INSERT INTO egress_requests_v2
+            (case_id, request_id, purpose, data_tier, provider_base_url,
+             envelope, source_refs, identifier_categories, content_hash, status,
+             approval_mode, reviewer, approval_reason, prepared_at, approved_at,
+             sent_at, send_lock_owner, transition_lock_owner)
+        SELECT case_id, request_id, purpose, data_tier, provider_base_url,
+               envelope, source_refs, identifier_categories, content_hash, status,
+               approval_mode, reviewer, approval_reason, prepared_at, approved_at,
+               sent_at, send_lock_owner, transition_lock_owner
+        FROM egress_requests
+        """,
+        "DROP TABLE egress_requests",
+        "ALTER TABLE egress_requests_v2 RENAME TO egress_requests",
+    ),
+}
 
 
 class CaseExistsError(RuntimeError):
@@ -215,9 +329,25 @@ class SqliteStore:
                 connection.execute(statement)
             connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         elif version != _SCHEMA_VERSION:
-            raise RuntimeError(
-                f"unsupported database schema version: {version}"
-            )
+            if not 0 < version < _SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"unsupported database schema version: {version}"
+                )
+            for step in range(version + 1, _SCHEMA_VERSION + 1):
+                with self.transaction() as transaction:
+                    # Table rebuilds must not trip foreign-key enforcement
+                    # mid-copy; defer_foreign_keys is the PRAGMA that can be
+                    # set inside an open transaction (SQLite schema-change
+                    # procedure). foreign_key_check verifies nothing broke.
+                    transaction.execute("PRAGMA defer_foreign_keys=ON")
+                    for statement in _MIGRATION_STATEMENTS[step]:
+                        transaction.execute(statement)
+                    broken = transaction.execute("PRAGMA foreign_key_check").fetchall()
+                    if broken:
+                        raise RuntimeError(
+                            f"migration to schema v{step} broke foreign keys: {broken}"
+                        )
+                    transaction.execute(f"PRAGMA user_version={step}")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -249,6 +379,12 @@ class SqliteStore:
                     "INSERT INTO cases (case_id, data_tier, created_at) VALUES (?, ?, ?)",
                     (case_id, data_tier, _utcnow()),
                 )
+                self.append_audit(
+                    case_id=case_id,
+                    action="case.create",
+                    object_type="case",
+                    object_id=case_id,
+                )
         except sqlite3.IntegrityError as exc:
             raise CaseExistsError(f"case already exists: {case_id}") from exc
 
@@ -271,6 +407,38 @@ class SqliteStore:
         if not self.case_exists(case_id):
             raise UnknownCaseError(f"unknown case: {case_id}")
         return CaseStore(self, case_id)
+
+    # -- audit log (ADR 0011) ----------------------------------------------
+
+    def append_audit(
+        self,
+        *,
+        case_id: str | None,
+        action: str,
+        object_type: str,
+        object_id: str,
+        content_hash: str | None = None,
+        destination: str | None = None,
+    ) -> None:
+        """Append one chained audit row (joins an open transaction)."""
+        _audit.append_audit(
+            self._connect(),
+            case_id=case_id,
+            action=action,
+            object_type=object_type,
+            object_id=object_id,
+            content_hash=content_hash,
+            destination=destination,
+        )
+
+    def verify_audit_chain(self) -> tuple[bool, int, int | None]:
+        return _audit.verify_audit_chain(self)
+
+    def list_audit_entries(self) -> list[sqlite3.Row]:
+        """All audit rows in chain order (used by verification and tests)."""
+        return self._connect().execute(
+            "SELECT * FROM audit_log ORDER BY seq"
+        ).fetchall()
 
     # -- JSON import ----------------------------------------------------
 
@@ -297,6 +465,12 @@ class SqliteStore:
                     "INSERT INTO known_names (case_id, name) VALUES (?, ?)",
                     (case_id, name),
                 )
+            self.append_audit(
+                case_id=case_id,
+                action="case.import_json",
+                object_type="case",
+                object_id=case_id,
+            )
             for material in bundle["materials"]:
                 connection.execute(
                     "INSERT INTO materials (case_id, material_id, version, title, provider, date)"
@@ -384,6 +558,10 @@ class CaseStore:
     def __init__(self, store: SqliteStore, case_id: str) -> None:
         self._store = store
         self._case_id = case_id
+        # Transport the server is about to use for a ``sent`` transition;
+        # the send route sets this before calling send_approved so the audit
+        # row for ``egress.send`` can record it. Allowlist-validated on use.
+        self.audit_destination: str | None = None
 
     @property
     def case_id(self) -> str:
@@ -392,6 +570,26 @@ class CaseStore:
     @property
     def _db(self) -> sqlite3.Connection:
         return self._store._connect()
+
+    def append_audit(
+        self,
+        *,
+        case_id: str | None,
+        action: str,
+        object_type: str,
+        object_id: str,
+        content_hash: str | None = None,
+        destination: str | None = None,
+    ) -> None:
+        """Append one audit row through the underlying store connection."""
+        self._store.append_audit(
+            case_id=case_id,
+            action=action,
+            object_type=object_type,
+            object_id=object_id,
+            content_hash=content_hash,
+            destination=destination,
+        )
 
     # -- materials ------------------------------------------------------
 
@@ -530,6 +728,17 @@ class CaseStore:
                         passage.text,
                     ),
                 )
+            # The audit row commits with the material it describes: content
+            # hash only, never title/provider/date/passage text.
+            self.append_audit(
+                case_id=self._case_id,
+                action="material.import",
+                object_type="material",
+                object_id=material_id,
+                content_hash=hashlib.sha256(
+                    "\n\n".join(p.text for p in passages).encode("utf-8")
+                ).hexdigest(),
+            )
         return material
 
     # -- known names ------------------------------------------------------
@@ -614,6 +823,15 @@ class CaseStore:
             version = (row["v"] or 0) + 1
             claim = Claim(id=claim_id, case_id=self._case_id, version=version, **fields)
             self._insert_claim(connection, claim)
+            # The audit row commits with the claim it describes: text hash
+            # only, never claim text.
+            self.append_audit(
+                case_id=self._case_id,
+                action="claim.accept",
+                object_type="claim",
+                object_id=claim.id,
+                content_hash=hashlib.sha256(claim.text.encode("utf-8")).hexdigest(),
+            )
         return claim
 
     def mark_claim_status(self, claim_id: str, status: str) -> Claim:
@@ -674,8 +892,25 @@ class CaseStore:
             verification_status=row["verification_status"],
         )
 
+    # Status transitions that must leave exactly one audit row in the same
+    # transaction as the state change itself (ADR 0011).
+    _EGRESS_AUDIT_ACTIONS = {
+        "prepared": "egress.prepare",
+        "approved": "egress.approve",
+        "invalidated": "egress.invalidate",
+        "sent": "egress.send",
+    }
+
     def save_egress_request(self, request) -> None:
-        """Insert or replace one egress request row (case-scoped)."""
+        """Insert or replace one egress request row (case-scoped).
+
+        When the status changes to ``prepared``, ``approved``, ``invalidated``
+        or ``sent``, the matching audit row is appended in the *same*
+        transaction, so a crash or an audit failure can never leave a state
+        change without its audit entry (the write rolls back instead). For
+        ``sent`` the destination is taken from :attr:`audit_destination`,
+        which the server sets to the transport it is about to use.
+        """
         import json as _json
 
         from psychtool.core.egress import EgressRequest
@@ -685,6 +920,10 @@ class CaseStore:
         if request.workspace_id != self._case_id:
             raise ValueError("egress request belongs to a different case")
         with self._store.transaction() as connection:
+            previous = connection.execute(
+                "SELECT status FROM egress_requests WHERE case_id = ? AND request_id = ?",
+                (self._case_id, request.request_id),
+            ).fetchone()
             connection.execute(
                 "INSERT INTO egress_requests"
                 " (case_id, request_id, purpose, data_tier, provider_base_url,"
@@ -737,6 +976,23 @@ class CaseStore:
                     request.request_id,
                 ),
             )
+            previous_status = previous["status"] if previous is not None else None
+            action = (
+                self._EGRESS_AUDIT_ACTIONS.get(request.status)
+                if request.status != previous_status
+                else None
+            )
+            if action is not None:
+                self.append_audit(
+                    case_id=self._case_id,
+                    action=action,
+                    object_type="egress_request",
+                    object_id=request.request_id,
+                    content_hash=request.content_hash,
+                    destination=(
+                        self.audit_destination if request.status == "sent" else None
+                    ),
+                )
 
     def get_egress_request(self, request_id: str):
         import json as _json
@@ -905,6 +1161,13 @@ class CaseStore:
                     reviewer,
                     updated_at,
                 ),
+            )
+            self.append_audit(
+                case_id=self._case_id,
+                action="section.save",
+                object_type="section",
+                object_id=section_id,
+                content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
             )
         return draft
 

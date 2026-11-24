@@ -37,12 +37,14 @@ cd web && bun install && bun run build   # 构建前端（FastAPI 直接提供 w
 cd .. && uv run psychtool-server         # 打开 http://127.0.0.1:8000
 ```
 
+**本地安全基线（ADR 0011）。** 服务器仅绑定 loopback（非 loopback 的 `PSYCHTOOL_HOST` 拒绝启动）；每次启动产生一组会话令牌，所有 `/api/*`（除 `GET /api/health`）需带 `X-Psychtool-Token`；每个响应带严格 CSP 与安全标头；启动自检拒绝把数据库放进云同步文件夹（磁盘加密仅警告）。审计日志为 SQLite 内仅追加、哈希链保护的 `audit_log` 表，与状态变更同一事务写入。**开发提示**：直接打开服务器提供的页面即自动带令牌；用 Vite dev server 时，须把同一组 `PSYCHTOOL_SESSION_TOKEN`（≥32 字符）设给后端与前端 proxy，否则 API 返回 401。
+
 测试：
 
 ```bash
-uv run --extra dev pytest -q                          # 后端
-cd web && bun test && bun run build                   # 前端单元测试 + 构建
-cd web && bunx playwright install chromium && bun run e2e   # 端到端（需先构建 web/dist）
+uv run --extra dev pytest -q                          # 后端（含 test_security / test_selfcheck / test_audit_log / test_send_lock_recovery）
+cd web && bun test && bun run build                   # 前端单元测试（含 api.ts 令牌、send_interrupted 状态）+ 构建
+cd web && bunx playwright install chromium && bun run e2e   # 端到端（含 security.e2e：CSP 标头、无 CSP console 错误、无令牌 401）
 ```
 
 <div id="first-workflow"></div>

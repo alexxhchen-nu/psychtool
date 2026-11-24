@@ -10,13 +10,45 @@ export class ApiError extends Error {
   }
 }
 
+// The server injects the per-start session token into the served index.html
+// as <meta name="psychtool-session" content="...">. It is read once and sent
+// as X-Psychtool-Token on every API call; if the meta tag is absent (e.g.
+// the Vite dev server), requests go out without it and the server answers
+// 401 unless the dev proxy adds the header.
+const SESSION_HEADER = 'X-Psychtool-Token'
+let cachedToken: string | null | undefined
+
+export function sessionToken(): string | null {
+  if (cachedToken !== undefined) return cachedToken
+  cachedToken = null
+  try {
+    const meta = document.querySelector<HTMLMetaElement>(`meta[name="psychtool-session"]`)
+    const content = meta?.content?.trim()
+    if (content) cachedToken = content
+  } catch { cachedToken = null }
+  return cachedToken
+}
+
+/** Test hook: forget the cached token so the next call re-reads the DOM. */
+export function resetSessionTokenCache(): void {
+  cachedToken = undefined
+}
+
+function withSessionHeader(init?: RequestInit): RequestInit {
+  const token = sessionToken()
+  if (!token) return init ?? {}
+  const headers = new Headers(init?.headers)
+  headers.set(SESSION_HEADER, token)
+  return { ...init, headers }
+}
+
 export function workspaceUrl(workspaceId: string): string {
   return `/api/workspaces/${encodeURIComponent(workspaceId)}`
 }
 
 export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response
-  try { response = await fetch(url, init) } catch { throw new ApiError(0) }
+  try { response = await fetch(url, withSessionHeader(init)) } catch { throw new ApiError(0) }
   if (!response.ok) throw new ApiError(response.status)
   try { return await response.json() as T } catch { throw new ApiError(0) }
 }

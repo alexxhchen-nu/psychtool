@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from psychtool.core.workspace import Passage
 from psychtool.server.app import create_app
 from psychtool.store.sqlite_store import SqliteStore
+from tests.conftest import build_client
 
 _CHILD_SOURCE = """
 import sys
@@ -130,6 +131,7 @@ _MID_TRANSACTION_CHILD = """
 import sys
 import time
 from psychtool.store.sqlite_store import SqliteStore
+from tests.conftest import build_client
 
 db_path = sys.argv[1]
 store = SqliteStore(db_path)
@@ -219,7 +221,7 @@ def test_persistence_across_two_app_instances(tmp_path, monkeypatch):
     db_path = tmp_path / "psychtool.db"
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(db_path))
 
-    first = TestClient(create_app())
+    first = build_client(create_app())
     assert first.post("/api/workspaces", json={"case_id": "case-a"}).status_code == 201
     pasted = first.post(
         "/api/workspaces/case-a/materials/paste",
@@ -242,7 +244,7 @@ def test_persistence_across_two_app_instances(tmp_path, monkeypatch):
         "/api/workspaces/case-a/names", json={"names": ["Jane Doe"]}
     ).status_code == 200
 
-    second = TestClient(create_app())
+    second = build_client(create_app())
     assert second.get("/api/workspaces").json() == [{"case_id": "case-a"}]
     materials = second.get("/api/workspaces/case-a/materials").json()
     assert [m["id"] for m in materials] == ["m1"]
@@ -254,7 +256,7 @@ def test_persistence_across_two_app_instances(tmp_path, monkeypatch):
     assert second.put(
         "/api/workspaces/case-a/names", json={"names": ["Jane Doe", "Dr. Smith"]}
     ).status_code == 200
-    third = TestClient(create_app())
+    third = build_client(create_app())
     assert third.get("/api/workspaces/case-a/names").json() == {
         "names": ["Dr. Smith", "Jane Doe"]
     }
