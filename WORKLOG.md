@@ -271,3 +271,35 @@
 
 - Playwright e2e（含新 `upload.e2e.ts`）需在沙箱外跑瀏覽器。
 - M1 無 OCR 為刻意取捨；掃描檔支援需另開 ADR。
+
+---
+
+## 2026-11-24 16:20 CST — PT-03 review answers from Alex, and PT-04 supervisor verification
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding: runs 1–2 hit the 5-hour quota (HTTP 429), and from run 3 the automatic retry succeeded. The deepseek-flash fallback was not triggered.
+
+### Alex's answers to the 4 PT-03 questions (2026-11-24)
+
+1. **Vite dev-mode Host check:** keep relying on Vite's own Host check. Not changed in M1.
+2. **User-chosen case / material ids:** switch to generated ids before real data arrives. Tracked separately; not in PT-04.
+3. **Audit hashes:** switch to HMAC (keyed hashes) before real data arrives, together with SQLCipher. Tracked separately; not in PT-04.
+4. **Unexpected errors in logs:** add a catch-all error handler that logs only the exception type. The client gets a fixed 500. **Done in PT-04.**
+
+### Supervisor direct fixes
+
+- `CaseStore.confirm_synthetic` now writes the `case.confirm_synthetic` audit row in the **same transaction** as the confirmation. The worker version wrote it in the route as a separate transaction, which broke ADR 0011. Added a rollback test that injects an audit failure: the confirmation rolls back too. The test was confirmed failing on the old code first.
+- `web/e2e/upload.e2e.ts`: the PDF step now actually submits and checks the R12 message. Added a server-side check (direct API upload of a PDF → 400 `scan_not_supported`, material count unchanged).
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **469 passed**; `bun test` → **114 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **4 passed** (case-switch, security, upload, walking-skeleton). 
+- Live `uv run psychtool-server`:
+  - Upload before confirmation → 409 `confirmation_required`.
+  - Confirming twice writes only 1 audit row.
+  - .md upload works (2 passages); same id again → v2, v1 unchanged.
+  - 11 MiB → 413 `too_large`; .pdf / .png → 400 `scan_not_supported`; non-UTF-8 → 400 `not_utf8`; .docx → 400 `unsupported_type`. Material, passage and audit counts are unchanged after every rejection.
+  - The marker is in neither the audit rows nor the logs.
+- Live catch-all check:
+  - The real `main()` with one store method forced to raise an exception carrying a marker → response `500 {"detail":"internal error"}` with the CSP header.
+  - The log has only `unhandled error: RuntimeError`, with no marker and no Traceback.
+  - Control run with the uvicorn filter removed: the marker and the Traceback both appear, which proves the filter is what stops them.

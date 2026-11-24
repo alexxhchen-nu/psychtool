@@ -492,10 +492,14 @@ def test_v2_database_migrates_to_v3_with_confirmation_column(tmp_path):
     assert case.is_synthetic_confirmed() is False
     assert case.confirm_synthetic() is True
     assert case.is_synthetic_confirmed() is True
-    # The audit chain is intact across the migration (the one v2 row; the
-    # store-level confirm writes no audit row — the API layer does that).
+    # The audit chain is intact across the migration: the one v2 row plus
+    # the confirmation row the store appends in the same transaction.
     ok, count, bad = verify_audit_chain(store)
-    assert (ok, count, bad) == (True, 1, None)
+    assert (ok, count, bad) == (True, 2, None)
+    last = connection.execute(
+        "SELECT action, object_type, object_id FROM audit_log ORDER BY seq DESC LIMIT 1"
+    ).fetchone()
+    assert tuple(last) == ("case.confirm_synthetic", "case", "case-old")
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
