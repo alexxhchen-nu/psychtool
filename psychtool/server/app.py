@@ -41,13 +41,20 @@ from psychtool.core.sections import (
     save_section,
     section_states,
 )
-from psychtool.core.workspace import get_known_names, list_materials, set_known_names
-from psychtool.config import load_config
+from psychtool.core.workspace import (
+    WorkspaceExistsError,
+    get_known_names,
+    init_workspace,
+    list_materials,
+    set_known_names,
+)
+from psychtool.config import Config, load_config
 from psychtool.gateway.client import (
     EgressOutputBlockedError,
     NetworkForbiddenError,
     send_approved,
 )
+from psychtool.gateway.fake import fake_transport
 from psychtool.gateway.http import http_transport
 
 # Project root is two levels up from psychtool/server/app.py.
@@ -87,6 +94,26 @@ class ApproveEgressPayload(BaseModel):
     synthetic_auto_reason: str | None = None
 
 
+_CASE_ID_RE = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+
+
+class CreateCasePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str = Field(pattern=_CASE_ID_RE)
+
+
+class PasteMaterialPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_id: str
+    title: str
+    provider: str
+    date: str
+    text: str
+    synthetic_confirmed: bool = False
+
+
 def _egress_response(request: EgressRequest) -> dict:
     """Return the persisted review surface without runtime-only configuration."""
     return {
@@ -124,6 +151,27 @@ def _workspace_path(case_id: str) -> Path:
     return candidate
 
 
+def _existing_workspace_path(case_id: str) -> Path:
+    """Resolve a case that must already exist; 404 otherwise."""
+    workspace = _workspace_path(case_id)
+    if not (workspace / "meta.json").is_file():
+        raise HTTPException(status_code=404, detail="case not found")
+    return workspace
+
+
+def _select_transport(config: Config):
+    """Pick the model transport from config; the offline fake is the default.
+
+    ``http_transport`` is reachable only through the explicit
+    ``PSYCHTOOL_TRANSPORT=http`` opt-in, so the default dev run, tests and the
+    e2e never open a socket. Every existing gateway check (approval hash,
+    send-once lock, data tier, output PII gate) runs before any transport.
+    """
+    if config.transport == "http":
+        return http_transport
+    return fake_transport
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="psychtool", version=__version__)
 
@@ -158,6 +206,18 @@ def create_app() -> FastAPI:
             if d.is_dir() and (d / "meta.json").is_file()
         ]
 
+    @app.post("/api/workspaces", status_code=201)
+    def create_workspace(body: CreateCasePayload) -> dict:
+        case_id = body.case_id
+        target = _workspace_path(case_id)
+        try:
+            init_workspace(target, case_id=case_id)
+        except WorkspaceExistsError as exc:
+            raise HTTPException(status_code=409, detail="case already exists") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="could not create case") from exc
+        return {"case_id": case_id}
+
     @app.get("/api/workspaces/{case_id}/materials")
     def materials(case_id: str) -> list[dict]:
         return [m.model_dump() for m in list_materials(_workspace_path(case_id))]
@@ -176,6 +236,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"material": material.model_dump(), "identifier_findings": findings,
+                "requires_human_review": True}
+
+    @app.post("/api/workspaces/{case_id}/materials/paste")
+    def paste_material(case_id: str, body: PasteMaterialPayload) -> dict:
+        workspace = _existing_workspace_path(case_id)
+        if not body.synthetic_confirmed:
+            raise HTTPException(
+                status_code=400,
+                detail="pasted text must be confirmed as synthetic",
+            )
+        try:
+            data = body.text.encode("utf-8")
+            material, findings = import_upload(
+                workspace, filename="pasted-synthetic-text.txt", data=data,
+                material_id=body.material_id, title=body.title,
+                provider=body.provider, date=body.date,
+            )
+        except (UnicodeError, KeyError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="pasted material could not be accepted"
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail="paste import unavailable") from exc
         return {"material": material.model_dump(), "identifier_findings": findings,
                 "requires_human_review": True}
 
@@ -300,12 +384,13 @@ def create_app() -> FastAPI:
 
     @app.post("/api/workspaces/{case_id}/egress/{request_id}/send")
     def send_egress(case_id: str, request_id: str) -> dict:
+        config = load_config()
         try:
             text = send_approved(
                 _workspace_path(case_id),
                 request_id,
-                config=load_config(),
-                transport=http_transport,
+                config=config,
+                transport=_select_transport(config),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="egress request not found") from exc

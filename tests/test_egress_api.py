@@ -20,6 +20,7 @@ _ENV_VARS = (
     "PSYCHTOOL_DATA_TIER",
     "PSYCHTOOL_API_KEY",
     "PSYCHTOOL_REDACT",
+    "PSYCHTOOL_TRANSPORT",
 )
 
 
@@ -58,6 +59,9 @@ def _configure(monkeypatch, tmp_path, *, tier="real"):
     monkeypatch.setenv("PSYCHTOOL_MODEL", "local-model")
     monkeypatch.setenv("PSYCHTOOL_DATA_TIER", tier)
     monkeypatch.setenv("PSYCHTOOL_API_KEY", "api-key-must-not-leak")
+    # These tests monkeypatch ``http_transport`` (no real network), so they
+    # explicitly opt into the http transport mode to reach it.
+    monkeypatch.setenv("PSYCHTOOL_TRANSPORT", "http")
 
 
 def _prepare_body():
