@@ -9,7 +9,7 @@
 1. **關鍵字清單與比對規則**（`psychtool/core/protected.py`，自原型逐字移植）：英文用字界（`\b`）比對——`test item(s)`、`test question(s)`、`norm`/`norms`、`norm table(s)`/`normative table(s)`、`scoring rule(s)`/`scoring key(s)`/`scoring criteria`、`conversion table(s)`、`raw-score table(s)`/`raw score table(s)`；中文以純子字串比對（中文無字界）——`原题`、`常模`、`计分规则`、`评分标准`、`换算表`。比對不分大小寫。因此 `normal`、`normally`、`abnormal`、`enormous`、`normalize`、`normative data` 不會命中。
 2. **套用位置**：
    - **伺服器上傳與貼上**（`import_upload`）：切分段落後先篩查再寫入。命中段落被丟棄，保留段落以 `p001` 起重新連續編號（新上傳版本尚無 claim 引用，重新編號安全）；識別子檢查（identifier findings）只對保留段落的文字計算，被阻擋文字的一切資訊不進回應。
-   - **CLI 上傳**：同一路徑（`import_upload` 的 JSON workspace 分支）。
+   - **CLI `import` 與 eval 材料**（`workspace.import_material`）：篩查在函式內、寫檔之前完成，被阻擋段落不進 JSON material store；保留段落以 `p001` 起重新編號（新 JSON 版本尚無 claim 引用）。全部被阻擋或檢查器失敗 → 拋 `ProtectedContentError`，CLI 印固定訊息到 stderr 並以 exit 1 結束；部分阻擋時 CLI 另印一行固定 held-back 計數。`import_upload` 的 JSON workspace 分支也經同一函式（伺服器上傳走 SQLite `CaseStore` 分支，不受影響）。
    - **JSON workspace 匯入**（`SqliteStore.import_workspace`）：開交易前完成全部篩查。保留段落**保留原段落 id**（claim 以段落 id 引用來源，重新編號會使 claim 靜默指向別的段落；`position` 仍連續）。任一 claim 文字命中篩查、或引用到被阻擋的段落 → 整筆匯入拒絕（固定 `ValueError`，不寫任何列）。
    - **egress 防禦縱深**（`prepare_egress_request`）：SQLite 路徑重新篩查 `source_refs` 背後的 claim 文字與 material 段落文字（涵蓋 PT-05 之前已入庫的資料）；JSON workspace 路徑無法經 egress store 協定取回 claim/material，改為篩查整份 prompt——較嚴格（使用者親自輸入的 instructions 也會被篩），屬可接受的保守方向。命中或檢查器錯誤皆拒絕 prepare，不持久化任何 egress 列。臨床人員親自輸入的 instructions/section 文字在 SQLite 路徑**不**篩查：那是她自己的書寫，不是上傳的測驗內容。
 3. **fail-closed（R13-AC2）**：檢查器本身拋出任何例外 → 整筆上傳/匯入/prepare 拒絕（`protected_check_failed` / egress 拒絕），不寫任何資料列。沒有「略過檢查繼續」的路徑。

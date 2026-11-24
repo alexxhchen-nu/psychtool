@@ -22,7 +22,15 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Union
 
-from psychtool.core.protected import find_protected
+from psychtool.core.protected import (
+    PROTECTED_CHECK_FAILED_MESSAGE,
+    PROTECTED_CHECK_FAILED_REASON,
+    PROTECTED_CONTENT_MESSAGE,
+    PROTECTED_CONTENT_REASON,
+    ProtectedContentError,
+    filter_protected_passages as _filter_protected_passages,
+    find_protected,
+)
 from psychtool.core.redact import find_identifiers, redact_text
 from psychtool.core.workspace import Material, Passage, get_known_names, import_material, split_passages
 
@@ -48,35 +56,11 @@ SERVER_UPLOAD_MESSAGES = {
 }
 SCAN_SUFFIXES = OCR_SUFFIXES  # R12: scans/images rejected on the server, no OCR
 
-# Fixed R13 rejection vocabulary (ADR 0013). The message never quotes the
-# filename, the title, or any blocked text; the count is filled in by the
-# client from ``blocked_paragraphs``.
-PROTECTED_CONTENT_REASON = "protected_content"
-PROTECTED_CHECK_FAILED_REASON = "protected_check_failed"
-PROTECTED_CONTENT_MESSAGE = (
-    "Paragraphs were held back: they appear to contain test items, norms or "
-    "scoring rules. They were not added to this case and will never be sent "
-    "to the AI assistant. A way to request release will come in a later version."
-)
-PROTECTED_CHECK_FAILED_MESSAGE = (
-    "The upload could not be checked for protected test content, so it was "
-    "rejected. Nothing was stored. Try again; if it keeps failing, contact support."
-)
-
-
-class ProtectedContentError(ValueError):
-    """An R13 upload rejection: an allowlisted ``reason`` plus fixed text."""
-
-    def __init__(self, reason: str) -> None:
-        if reason not in (PROTECTED_CONTENT_REASON, PROTECTED_CHECK_FAILED_REASON):
-            raise ValueError(f"unknown protected-content reason: {reason!r}")
-        self.reason = reason
-        message = (
-            PROTECTED_CONTENT_MESSAGE
-            if reason == PROTECTED_CONTENT_REASON
-            else PROTECTED_CHECK_FAILED_MESSAGE
-        )
-        super().__init__(message)
+# R13 rejection vocabulary and the shared passage filter live in
+# ``psychtool.core.protected`` (ADR 0013); they are re-imported above so
+# existing callers keep working: PROTECTED_CONTENT_REASON,
+# PROTECTED_CHECK_FAILED_REASON, PROTECTED_CONTENT_MESSAGE,
+# PROTECTED_CHECK_FAILED_MESSAGE, ProtectedContentError, _filter_protected_passages.
 
 
 class ServerUploadError(ValueError):
@@ -142,38 +126,6 @@ def _is_case_store(target: object) -> bool:
     return not isinstance(target, (str, Path))
 
 
-def _filter_protected_passages(passages: list[Passage]) -> tuple[list[Passage], int, str | None]:
-    """Drop passages matching the R13 screen; fail closed on any checker error.
-
-    Kept passages are renumbered contiguously from ``p001`` so stored passage
-    ids and positions always line up with the text actually stored (quotes and
-    char ranges are computed against the stored text). Returns
-    ``(kept, blocked_count, blocked_hash)`` where the hash is sha256 of the
-    blocked passages' text joined with ``"\\n\\n"`` (None when nothing blocked).
-    """
-    import hashlib
-
-    try:
-        blocked_indexes = find_protected([passage.text for passage in passages])
-    except Exception:
-        # Fail closed (R13-AC2): a checker that errors rejects the whole
-        # upload; nothing is written, not even an audit row.
-        raise ProtectedContentError(PROTECTED_CHECK_FAILED_REASON) from None
-    if not blocked_indexes:
-        return passages, 0, None
-    blocked = set(blocked_indexes)
-    kept = [
-        Passage(id=f"p{position:03d}", text=passage.text)
-        for position, passage in enumerate(
-            (p for i, p in enumerate(passages) if i not in blocked), start=1
-        )
-    ]
-    blocked_hash = hashlib.sha256(
-        "\n\n".join(passages[i].text for i in blocked_indexes).encode("utf-8")
-    ).hexdigest()
-    return kept, len(blocked_indexes), blocked_hash
-
-
 def import_upload(target: UploadTarget, *, filename: str, data: bytes,
                   material_id: str, title: str, provider: str, date: str) -> tuple[Material, list[dict], int]:
     """Import one upload, dropping protected passages before any store write.
@@ -226,13 +178,18 @@ def import_upload(target: UploadTarget, *, filename: str, data: bytes,
                           for hit in findings], blocked_count
     workspace = Path(target)
     names = get_known_names(workspace)
+    if not passages:
+        # All-blocked in the JSON branch: nothing is written (no audit row in
+        # the JSON store), so reject with the fixed reason.
+        raise ProtectedContentError(PROTECTED_CONTENT_REASON)
     kept_text = "\n\n".join(passage.text for passage in passages)
     findings = find_identifiers(kept_text, known_names=names)
     safe_title, _ = redact_text(title, known_names=names)
     safe_provider, _ = redact_text(provider, known_names=names)
     safe_date, _ = redact_text(date, known_names=names)
-    if not passages:
-        raise ProtectedContentError(PROTECTED_CONTENT_REASON)
+    # The screen inside ``workspace.import_material`` re-runs on the kept
+    # passages and finds nothing (the filter is deterministic), so the count
+    # returned here stays the count computed above.
     material = import_material(workspace, material_id=material_id, title=safe_title,
                                provider=safe_provider, date=safe_date, text="\n\n".join(
                                    passage.text for passage in passages))

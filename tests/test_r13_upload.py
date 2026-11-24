@@ -188,12 +188,12 @@ def test_r13_ac1_all_blocked_upload_is_rejected(client, db_path):
 
 
 def test_r13_ac2_check_error_rejects_whole_upload(client, db_path, monkeypatch):
-    import psychtool.core.ingest as ingest_module
+    import psychtool.core.protected as protected_module
 
     def broken(texts):
         raise RuntimeError("injected checker failure")
 
-    monkeypatch.setattr(ingest_module, "find_protected", broken)
+    monkeypatch.setattr(protected_module, "find_protected", broken)
     before = _table_counts(db_path)
     response = _upload(client)
     assert response.status_code == 503
