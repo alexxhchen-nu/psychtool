@@ -122,6 +122,35 @@ def import_material_cmd(
     typer.echo(f"imported {material_id} v{mat.version}")
 
 
+@app.command("import-json")
+def import_json_cmd(
+    workspace_dir: str,
+    db: str = typer.Option(None, "--db"),
+):
+    """Import an ADR 0005 JSON workspace directory into the SQLite store.
+
+    The whole workspace loads as one transaction: on any error nothing is
+    written. Refuses to import over an existing case id. Without ``--db`` the
+    database resolves exactly like the server: ``PSYCHTOOL_DB_PATH`` first,
+    else ``local-data/psychtool.db``.
+    """
+    from psychtool.store.sqlite_store import SqliteStore, default_db_path
+
+    db_path = Path(db) if db else default_db_path()
+    try:
+        case_id = SqliteStore(db_path).import_workspace(Path(workspace_dir))
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except Exception as exc:
+        from psychtool.store.sqlite_store import CaseExistsError
+
+        if isinstance(exc, CaseExistsError):
+            typer.echo(f"case already exists: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        raise
+    typer.echo(f"imported case {case_id} into {db}")
+
+
 claims_app = typer.Typer()
 app.add_typer(claims_app, name="claims")
 

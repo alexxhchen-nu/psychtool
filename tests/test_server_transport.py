@@ -92,7 +92,7 @@ def _prepared_approved(client):
 
 
 def test_default_send_path_uses_fake_transport_without_network(tmp_path, monkeypatch):
-    monkeypatch.setenv("PSYCHTOOL_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
     _block_network(monkeypatch)
     client = TestClient(create_app())
     prepared = _prepared_approved(client)
@@ -131,7 +131,7 @@ def test_unknown_transport_value_falls_back_to_fake(monkeypatch):
 
 def test_saved_section_survives_reopen(tmp_path, monkeypatch):
     """Reloading the case (a fresh app) returns the saved section text."""
-    monkeypatch.setenv("PSYCHTOOL_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
     client = TestClient(create_app())
     prepared = _prepared_approved(client)
     sent = client.post(f"/api/workspaces/case-a/egress/{prepared['request_id']}/send")

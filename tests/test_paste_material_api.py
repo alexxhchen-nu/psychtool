@@ -13,7 +13,7 @@ from psychtool.server.app import create_app
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("PSYCHTOOL_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
     api = TestClient(create_app())
     assert api.post("/api/workspaces", json={"case_id": "case-a"}).status_code == 201
     return api
