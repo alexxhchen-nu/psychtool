@@ -24,6 +24,21 @@ psychtool 是一个帮助个人写报告的临床写作工作区，目标用户�
 
 本仓库包含：需求与边界、官方隐私来源研究、实证证据矩阵、开发规格与实现票、两组原创合成训练材料，以及上述可运行的 CLI 应用。详细研究文档以简体中文为主。
 
+**浏览器应用（本地原型）。** 除 CLI 外，本仓库另含本机浏览器原型：创建合成个案、粘贴合成文字（规则式抽取候选陈述）、人工批准后经由网关送出生成请求、把产出存为段落，刷新后仍在。**默认使用离线 FakeTransport 模型，不联网、不需要 API 密钥**；只有明确设置 `PSYCHTOOL_TRANSPORT=http` 才会走真实端点。原型**尚未符合 HIPAA**，页面常驻横幅亦如此提示；仅用合成数据。
+
+```bash
+cd web && bun install && bun run build   # 构建前端（FastAPI 直接提供 web/dist）
+cd .. && uv run psychtool-server         # 打开 http://127.0.0.1:8000
+```
+
+测试：
+
+```bash
+uv run --extra dev pytest -q                          # 后端
+cd web && bun test && bun run build                   # 前端单元测试 + 构建
+cd web && bunx playwright install chromium && bun run e2e   # 端到端（需先构建 web/dist）
+```
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">

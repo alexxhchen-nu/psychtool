@@ -24,6 +24,21 @@ Psychological assessment reports, clinical case reports, progress notes, and aca
 
 The repository holds requirements and boundaries, official privacy-source research, empirical evidence matrices, development specs and tickets, two sets of original synthetic training materials, and the runnable CLI application above. Detailed research documents are primarily in Simplified Chinese.
 
+**Browser application (local prototype).** In addition to the CLI, the repository contains a local browser prototype: create a synthetic case, paste synthetic text (rule-based candidate extraction), approve generation requests through the egress gateway, save the output as a section, and find it again after reload. **It uses the offline FakeTransport model by default — no network, no API key**; a real endpoint is used only when `PSYCHTOOL_TRANSPORT=http` is set explicitly. The prototype is **not HIPAA compliant**, as the persistent in-page banner states; use synthetic data only.
+
+```bash
+cd web && bun install && bun run build   # build the frontend (FastAPI serves web/dist)
+cd .. && uv run psychtool-server         # open http://127.0.0.1:8000
+```
+
+Tests:
+
+```bash
+uv run --extra dev pytest -q                          # backend
+cd web && bun test && bun run build                   # frontend unit tests + build
+cd web && bunx playwright install chromium && bun run e2e   # end-to-end (build web/dist first)
+```
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">

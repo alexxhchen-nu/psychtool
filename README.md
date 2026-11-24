@@ -24,6 +24,21 @@ psychtool 是一個幫助個人寫報告的臨床寫作工作區，目標使用�
 
 本儲存庫包含：需求與邊界、官方隱私來源研究、實證證據矩陣、開發規格與實現票、兩組原創合成訓練素材，以及上述可執行的 CLI 應用程式。詳細研究文件以簡體中文為主。
 
+**瀏覽器應用程式（本地原型）。** 除 CLI 外，本儲存庫另含本機瀏覽器原型：建立合成個案、貼上合成文字（規則式擷取候選陳述）、人工核准後經閘道送出生成請求、把產出存為段落，重新整理後仍在。**預設使用離線 FakeTransport 模型，不連網、不需 API 金鑰**；只有明確設定 `PSYCHTOOL_TRANSPORT=http` 才會走真實端點。原型**尚未符合 HIPAA**，頁面常駐橫幅亦如此提示；僅用合成資料。
+
+```bash
+cd web && bun install && bun run build   # 建置前端（FastAPI 直接供應 web/dist）
+cd .. && uv run psychtool-server         # 開啟 http://127.0.0.1:8000
+```
+
+測試：
+
+```bash
+uv run --extra dev pytest -q                          # 後端
+cd web && bun test && bun run build                   # 前端單元測試 + 建置
+cd web && bunx playwright install chromium && bun run e2e   # 端到端（需先建置 web/dist）
+```
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">
