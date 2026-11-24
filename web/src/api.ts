@@ -1,4 +1,4 @@
-import type { ApprovalInput, EgressRequest, PrepareInput, SendResult, UploadResult } from './types'
+import type { ApprovalInput, EgressRequest, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
 
 /** Never expose an error response body: validation/provider errors may contain input. */
 export class ApiError extends Error {
@@ -27,6 +27,14 @@ export function jsonRequest<T>(url: string, method: 'POST' | 'PUT', body: unknow
 
 export function uploadMaterial(workspaceId: string, form: FormData): Promise<UploadResult> {
   return apiRequest(`${workspaceUrl(workspaceId)}/materials`, { method: 'POST', body: form })
+}
+
+export function createCase(caseId: string): Promise<Workspace> {
+  return jsonRequest('/api/workspaces', 'POST', { case_id: caseId })
+}
+
+export function pasteMaterial(workspaceId: string, input: PasteMaterialInput): Promise<UploadResult> {
+  return jsonRequest(`${workspaceUrl(workspaceId)}/materials/paste`, 'POST', input)
 }
 
 export function prepareEgress(workspaceId: string, input: PrepareInput): Promise<EgressRequest> {
