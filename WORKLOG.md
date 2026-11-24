@@ -219,3 +219,27 @@
 
 - Playwright e2e 仍需沙箱外執行（沙箱無法下載瀏覽器）。
 - 稽核鏈只讓竄改「可被發現」，不防有檔案權限者 drop trigger 後重算整鏈（ADR 0011 已聲明）；本專案尚未符合 HIPAA。
+
+---
+
+## 2026-11-24 15:23 CST — PT-03 supervisor 核驗與修正（沙箱外、全新 clone）
+
+**執行者**：Grok Workhorse supervisor（worker：kimi-for-coding，run 4–6 遇 Kimi 配額 HTTP 429 後自動 fallback 至 deepseek-flash 完成 round 2）
+
+### supervisor 直接修正
+
+- `web/src/App.css`：移除 Google Fonts 遠端 `@import`（被嚴格 CSP 擋下、`security.e2e.ts` 抓到，也違反 S3「無遙測/無外連」）；改為本機字型堆疊。
+- 新增 `tests/test_no_telemetry.py`：掃描 `psychtool/**/*.py` 與 `web/src`（ts/tsx/css/html）及 `web/index.html`，非 loopback 的 http(s) URL 一律失敗。
+- `psychtool/server/main.py`：替 `psychtool` logger 加 INFO handler，啟動日誌才會真的顯示通過的自檢項（原本只看得到 warn 行）；`create_app` 改在雲端同步檢查之後才 import。
+- `psychtool/server/app.py`、`psychtool/server/__init__.py`：模組層 `app` 改為延遲建立，import 不再開啟預設資料庫（同步資料夾會在建立 DB 檔前就被拒）。
+- `psychtool/server/security.py`：權杖以 bytes 比對，非 ASCII 權杖回 401 而非 500；Host 的 port 必須是純數字（`127.0.0.1:80@evil.example` 拒絕）。
+- 新增 `tests/test_startup.py` 與 `test_security.py` 新案例；每項修正都先確認在舊程式上失敗（red）再通過（green）。
+- 修正本檔 PT-03 前兩則的時間（原寫成 UTC 數字）與執行者。
+
+### 實際核驗結果（commit 565e5b2，全新 clone）
+
+- `uv run --extra dev pytest -q` → **440 passed**（連跑 3 次）。
+- `cd web && bun install --frozen-lockfile && bun test` → **110 pass / 0 fail**；`bun run build` → 成功；`bun run e2e` → **3 passed**（case-switch、security、walking-skeleton）。
+- 實機 `uv run psychtool-server`（port 8811/8812）：無權杖、錯誤權杖、非 ASCII 權杖 → 401；`evil.example` 等 Host → 400；正確權杖 → 200；四次啟動的日誌都找不到權杖；稽核列與日誌都找不到標記字串 `ZEBRA-MARKER-7f3a`；直接對 DB 下 `UPDATE`/`DELETE audit_log` → `IntegrityError: audit log is append-only`；`verify_audit_chain` → `(True, 14, None)`。
+- 發送中途當機：http transport 指向本機掛住的假端點，送出後 SIGKILL 伺服器 → 重啟後請求變 `send_interrupted`、鎖清除、寫入一筆 `egress.send_lock_recovered`；再送 → 409；假端點總共只收到 **1** 次請求；再重啟 → `0 recovered`（冪等）。
+- `PSYCHTOOL_HOST=0.0.0.0` → exit 2；資料庫在 `Google Drive` 下 → exit 2。
