@@ -279,13 +279,7 @@ def create_app(session_token: str | None = None) -> FastAPI:
         ``case.confirm_synthetic`` row.
         """
         case = _case(case_id)
-        if case.confirm_synthetic():
-            case.append_audit(
-                case_id=case_id,
-                action="case.confirm_synthetic",
-                object_type="case",
-                object_id=case_id,
-            )
+        case.confirm_synthetic()  # audit row written in the same transaction
         return {"case_id": case_id, "synthetic_confirmed": True}
 
     @app.get("/api/workspaces/{case_id}")
@@ -366,13 +360,7 @@ def create_app(session_token: str | None = None) -> FastAPI:
         # A confirmed paste is itself the R2-AC3 confirmation: recording it
         # here means the file form stops asking once any material was
         # confirmed as synthetic (ADR 0012). One audit row, set-once.
-        if case.confirm_synthetic():
-            case.append_audit(
-                case_id=case_id,
-                action="case.confirm_synthetic",
-                object_type="case",
-                object_id=case_id,
-            )
+        case.confirm_synthetic()  # audit row written in the same transaction
         return {"material": material.model_dump(), "identifier_findings": findings,
                 "requires_human_review": True}
 

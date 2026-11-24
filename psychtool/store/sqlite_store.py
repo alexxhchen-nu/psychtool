@@ -591,8 +591,11 @@ class CaseStore:
     def confirm_synthetic(self) -> bool:
         """Record the first-upload confirmation, set-once and idempotent.
 
-        Returns True only when this call changed the case (the caller writes
-        the audit row then), so repeated confirmations append no extra rows.
+        Returns True only when this call changed the case. The
+        ``case.confirm_synthetic`` audit row is appended in the *same*
+        transaction (ADR 0011), so a crash or an audit failure can never leave
+        a confirmation without its audit row; repeated confirmations append
+        no extra rows.
         """
         with self._store.transaction() as connection:
             cursor = connection.execute(
@@ -600,7 +603,15 @@ class CaseStore:
                 " WHERE case_id = ? AND synthetic_confirmed_at IS NULL",
                 (_utcnow(), self._case_id),
             )
-            return cursor.rowcount == 1
+            changed = cursor.rowcount == 1
+            if changed:
+                self.append_audit(
+                    case_id=self._case_id,
+                    action="case.confirm_synthetic",
+                    object_type="case",
+                    object_id=self._case_id,
+                )
+            return changed
 
     def append_audit(
         self,

@@ -438,3 +438,30 @@ def test_uvicorn_server_stderr_never_contains_exception_text(db_path):
     assert "unhandled error: RuntimeError" in stderr
     assert MARKER not in stderr
     assert "Traceback" not in stderr
+
+
+def test_r2_ac3_confirmation_and_audit_row_roll_back_together(client, db_path, monkeypatch):
+    """An audit failure during confirmation must roll the confirmation back
+    too: the case never ends up confirmed without its audit row (ADR 0011)."""
+    from psychtool.store import sqlite_store as store_module
+
+    def broken_append_audit(self, **kwargs):
+        raise RuntimeError("injected audit failure")
+
+    monkeypatch.setattr(store_module.SqliteStore, "append_audit", broken_append_audit)
+    failing = build_client(client.app, raise_server_exceptions=False)
+    response = failing.post("/api/workspaces/case-a/synthetic-confirmation")
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal error"}
+    monkeypatch.undo()
+
+    raw = sqlite3.connect(db_path)
+    confirmed_at = raw.execute(
+        "SELECT synthetic_confirmed_at FROM cases WHERE case_id = 'case-a'"
+    ).fetchone()[0]
+    audit = raw.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'case.confirm_synthetic'"
+    ).fetchone()[0]
+    raw.close()
+    assert confirmed_at is None
+    assert audit == 0

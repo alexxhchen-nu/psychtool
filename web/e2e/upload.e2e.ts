@@ -68,6 +68,27 @@ test('upload: R2-AC3 confirmation gate, R2-AC1 .md upload + suggestions, R12 pdf
     mimeType: 'application/pdf',
     buffer: Buffer.from('%PDF-1.4 synthetic-not-a-real-scan', 'utf-8'),
   })
+  await upload.getByLabel(/Anonymous material ID/).fill('e2e-scan')
+  await upload.getByLabel('Title (required)').fill('E2E scan')
+  await upload.getByLabel('Provider (required)').fill('synthetic author')
+  await upload.getByLabel('Date (required)').fill('2026-11-24')
+  await upload.getByRole('button', { name: 'Upload material' }).click()
   await expect(upload.getByText(R12_MESSAGE)).toBeVisible()
   await expect(page.locator('.case-meta')).toContainText('1 materials')
+
+  // R2-AC2 / R12 on the server too (bypassing the browser-side check): the
+  // API refuses the scan with the fixed reason and writes nothing.
+  const token = await page.locator('meta[name="psychtool-session"]').getAttribute('content')
+  const headers = { 'X-Psychtool-Token': token ?? '' }
+  const rejected = await page.request.post(`/api/workspaces/${caseId}/materials`, {
+    headers,
+    multipart: {
+      file: { name: 'scan.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic', 'utf-8') },
+      material_id: 'e2e-scan', title: 'scan', provider: 'synthetic', date: '2026-11-24',
+    },
+  })
+  expect(rejected.status()).toBe(400)
+  expect(await rejected.json()).toEqual({ detail: R12_MESSAGE, reason: 'scan_not_supported' })
+  const materials = await page.request.get(`/api/workspaces/${caseId}/materials`, { headers })
+  expect((await materials.json()).length).toBe(1)
 })
