@@ -44,3 +44,22 @@ def test_create_case_rejects_extra_fields(client):
     )
 
     assert response.status_code == 400
+
+
+def test_create_case_maps_concurrent_mkdir_race_to_409(client, monkeypatch):
+    """Two concurrent creates of the same id: the loser's mkdir raises
+    FileExistsError after the exists-check, which must surface as 409."""
+    import importlib
+
+    # The psychtool.server package re-exports a FastAPI ``app`` object, so
+    # attribute access shadows the submodule; import it directly.
+    app_module = importlib.import_module("psychtool.server.app")
+
+    def _racy_init(workspace, *, case_id):
+        raise FileExistsError(17, "File exists", str(workspace))
+
+    monkeypatch.setattr(app_module, "init_workspace", _racy_init)
+    response = client.post("/api/workspaces", json={"case_id": "case-c"})
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "case already exists"}

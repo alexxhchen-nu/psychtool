@@ -212,7 +212,9 @@ def create_app() -> FastAPI:
         target = _workspace_path(case_id)
         try:
             init_workspace(target, case_id=case_id)
-        except WorkspaceExistsError as exc:
+        except (WorkspaceExistsError, FileExistsError) as exc:
+            # FileExistsError covers the exists-check/mkdir race: a concurrent
+            # create of the same id makes the loser raise from mkdir.
             raise HTTPException(status_code=409, detail="case already exists") from exc
         except OSError as exc:
             raise HTTPException(status_code=400, detail="could not create case") from exc

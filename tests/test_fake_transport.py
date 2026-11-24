@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import socket
 
-import pytest
-
 from psychtool.config import Config
 from psychtool.gateway.fake import FAKE_MODEL_TEXT, fake_transport
 from psychtool.gateway.http import http_transport
