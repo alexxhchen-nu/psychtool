@@ -97,6 +97,23 @@ export interface PrepareInput {
 }
 export type ApprovalInput = { content_hash: string; reviewer: string } | { content_hash: string; synthetic_auto_reason: string }
 export interface SendResult { request_id: string; status: 'sent'; text: string }
+export interface EvidenceItem {
+  id: string
+  quote: string
+  material_id: string
+  material_title: string
+  material_version: number
+  passage_id: string
+  paragraph: number
+  /** Code-point offsets into the passage text (see ADR 0014). */
+  start: number
+  end: number
+}
+export interface EvidenceResponse {
+  extractor: string
+  items: EvidenceItem[]
+  dropped: number
+}
 export interface PasteMaterialInput {
   material_id: string
   title: string

@@ -6,6 +6,7 @@ import { validateCaseId } from './case-form'
 import MaterialUploadPanel from './components/MaterialUploadPanel'
 import PasteMaterialPanel from './components/PasteMaterialPanel'
 import EgressReviewPanel from './components/EgressReviewPanel'
+import EvidencePanel from './components/EvidencePanel'
 import './App.css'
 
 export const PRIVACY_BANNER = 'Please note: This prototype is not HIPAA compliant yet. Do not enter real patient information. Use only synthetic or separately approved practice materials.'
@@ -127,6 +128,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
   const [showPaste, setShowPaste] = useState(false)
   const [showIntake, setShowIntake] = useState(false)
   const [showNames, setShowNames] = useState(false)
+  const [showEvidence, setShowEvidence] = useState(false)
   const [error, setError] = useState('')
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -213,6 +215,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showUpload} onClick={() => { setShowUpload(!showUpload); setShowPaste(false) }}>Upload material</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showPaste} onClick={() => { setShowPaste(!showPaste); setShowUpload(false) }}>Paste synthetic text</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showIntake} onClick={() => setShowIntake(!showIntake)}>Review intake claims</button>
+        <button className="ghost-button" disabled={busy || !ready} aria-expanded={showEvidence} onClick={() => setShowEvidence(!showEvidence)}>Evidence</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showNames} onClick={() => setShowNames(!showNames)}>Identifying info</button>
       </div>
     </section>
@@ -248,6 +251,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
       <label className="field-label">Identifying names ({names.length} saved)<textarea className="names-input" rows={5} value={namesText} disabled={busy} onChange={(event) => setNamesText(event.target.value)} /></label>
       <button className="primary-button" disabled={busy} onClick={saveNames}>Save names</button>
     </section>}
+    {ready && showEvidence && <EvidencePanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} />}
     {ready && selected && selectedState && <div className="report-grid">
       <aside className="section-rail" aria-label="Report sections"><div className="rail-heading"><span>Document map</span><strong>{template.sections.length} sections</strong></div>
         <ol>{template.sections.map((section, index) => {

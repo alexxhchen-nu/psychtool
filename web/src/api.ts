@@ -1,4 +1,4 @@
-import type { ApprovalInput, EgressRequest, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
+import type { ApprovalInput, EgressRequest, EvidenceResponse, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
 
 /** Never expose an error response body: validation/provider errors may contain input. */
 export class ApiError extends Error {
@@ -128,6 +128,10 @@ export function prepareEgress(workspaceId: string, input: PrepareInput): Promise
 
 export function getEgress(workspaceId: string, requestId: string): Promise<EgressRequest> {
   return apiRequest(`${workspaceUrl(workspaceId)}/egress/${encodeURIComponent(requestId)}`)
+}
+
+export function getEvidence(workspaceId: string): Promise<EvidenceResponse> {
+  return apiRequest(`${workspaceUrl(workspaceId)}/evidence`)
 }
 
 export function approveEgress(workspaceId: string, requestId: string, input: ApprovalInput): Promise<EgressRequest> {
