@@ -3,3 +3,4 @@ dist
 *.local
 test-results/
 playwright-report/
+tsconfig.app.tsbuildinfo
