@@ -66,13 +66,14 @@ export function jsonRequest<T>(url: string, method: 'POST' | 'PUT', body: unknow
 }
 
 /**
- * Upload with the server's fixed rejection reason surfaced. Only the upload
- * endpoint returns the allowlisted {detail, reason} body; every other API
- * error stays an opaque status (see ApiError).
+ * Requests with the server's fixed rejection reason surfaced. Only the
+ * upload and paste endpoints return the allowlisted {detail, reason} body
+ * (type/size rejections and the R13 protected-content reasons); every other
+ * API error stays an opaque status (see ApiError).
  */
-async function uploadRequest(url: string, form: FormData): Promise<UploadResult> {
+async function reasonedRequest(url: string, init: RequestInit): Promise<UploadResult> {
   let response: Response
-  try { response = await fetch(url, withSessionHeader({ method: 'POST', body: form })) } catch { throw new ApiError(0) }
+  try { response = await fetch(url, withSessionHeader(init)) } catch { throw new ApiError(0) }
   if (!response.ok) {
     let serverMessage: string | null = null
     try {
@@ -84,6 +85,10 @@ async function uploadRequest(url: string, form: FormData): Promise<UploadResult>
     throw new ApiError(response.status, serverMessage)
   }
   try { return await response.json() as UploadResult } catch { throw new ApiError(0) }
+}
+
+async function uploadRequest(url: string, form: FormData): Promise<UploadResult> {
+  return reasonedRequest(url, { method: 'POST', body: form })
 }
 
 export function uploadMaterial(workspaceId: string, form: FormData): Promise<UploadResult> {
@@ -103,7 +108,11 @@ export function getWorkspace(workspaceId: string): Promise<{ case_id: string; sy
 }
 
 export function pasteMaterial(workspaceId: string, input: PasteMaterialInput): Promise<UploadResult> {
-  return jsonRequest(`${workspaceUrl(workspaceId)}/materials/paste`, 'POST', input)
+  return reasonedRequest(`${workspaceUrl(workspaceId)}/materials/paste`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
 }
 
 export function prepareEgress(workspaceId: string, input: PrepareInput): Promise<EgressRequest> {

@@ -37,6 +37,7 @@ AuditAction = Literal[
     "case.import_json",
     "case.confirm_synthetic",
     "material.import",
+    "material.protected_blocked",
     "claim.accept",
     "section.save",
     "egress.prepare",
@@ -53,6 +54,7 @@ AUDIT_ACTIONS: frozenset[str] = frozenset(
         "case.import_json",
         "case.confirm_synthetic",
         "material.import",
+        "material.protected_blocked",
         "claim.accept",
         "section.save",
         "egress.prepare",
@@ -101,6 +103,7 @@ class AuditWriter(Protocol):
         object_id: str,
         content_hash: str | None = None,
         destination: str | None = None,
+        item_count: int | None = None,
     ) -> None: ...
 
 
@@ -109,8 +112,15 @@ def _utcnow() -> str:
 
 
 def compute_entry_hash(row: dict) -> str:
-    """SHA-256 over the canonical JSON of all chain fields incl. prev_hash."""
+    """SHA-256 over the canonical JSON of all chain fields incl. prev_hash.
+
+    ``item_count`` (schema v4, ADR 0013) joins the canonical JSON only when it
+    is not None, so rows written before v4 hash exactly as before and the
+    chain stays verifiable across the migration.
+    """
     canonical = {field: row.get(field) for field in _CHAIN_FIELDS}
+    if row.get("item_count") is not None:
+        canonical["item_count"] = row["item_count"]
     encoded = json.dumps(
         canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -124,6 +134,7 @@ def _validate(
     object_id: str,
     content_hash: str | None,
     destination: str | None,
+    item_count: int | None = None,
 ) -> None:
     if action not in AUDIT_ACTIONS:
         raise ValueError("audit action is not on the allowlist")
@@ -137,6 +148,13 @@ def _validate(
         raise ValueError("audit content hash must be 64 lowercase hex chars")
     if destination is not None and destination not in AUDIT_DESTINATIONS:
         raise ValueError("audit destination is not on the allowlist")
+    # A count is a non-negative int or nothing: no text can get in this way.
+    if item_count is not None and (
+        not isinstance(item_count, int)
+        or isinstance(item_count, bool)
+        or item_count < 0
+    ):
+        raise ValueError("audit item count must be a non-negative integer")
 
 
 def _insert(
@@ -148,6 +166,7 @@ def _insert(
     object_id: str,
     content_hash: str | None,
     destination: str | None,
+    item_count: int | None = None,
 ) -> None:
     """Append one chained row on an open connection (joins any transaction)."""
     _validate(
@@ -156,6 +175,7 @@ def _insert(
         object_id=object_id,
         content_hash=content_hash,
         destination=destination,
+        item_count=item_count,
     )
     row = connection.execute(
         "SELECT entry_hash FROM audit_log ORDER BY seq DESC LIMIT 1"
@@ -170,12 +190,37 @@ def _insert(
         "content_hash": content_hash,
         "destination": destination,
         "prev_hash": prev_hash,
+        "item_count": item_count,
     }
+    entry_hash = compute_entry_hash(fields)
+    if item_count is None:
+        # Omit the column entirely when unset so the INSERT also works on a
+        # pre-v4 table (the v2->v4 migration test appends rows before the
+        # v3->v4 ALTER runs; the column defaults to NULL, same as storing
+        # None explicitly). The chain hash already covers None identically.
+        connection.execute(
+            "INSERT INTO audit_log"
+            " (case_id, ts, action, object_type, object_id, content_hash,"
+            "  destination, prev_hash, entry_hash)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                case_id,
+                fields["ts"],
+                action,
+                object_type,
+                object_id,
+                content_hash,
+                destination,
+                prev_hash,
+                entry_hash,
+            ),
+        )
+        return
     connection.execute(
         "INSERT INTO audit_log"
         " (case_id, ts, action, object_type, object_id, content_hash,"
-        "  destination, prev_hash, entry_hash)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "  destination, prev_hash, entry_hash, item_count)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             case_id,
             fields["ts"],
@@ -185,7 +230,8 @@ def _insert(
             content_hash,
             destination,
             prev_hash,
-            compute_entry_hash(fields),
+            entry_hash,
+            item_count,
         ),
     )
 
@@ -199,6 +245,7 @@ def append_audit(
     object_id: str,
     content_hash: str | None = None,
     destination: str | None = None,
+    item_count: int | None = None,
 ) -> None:
     """Append one audit row; free text cannot pass the structural checks.
 
@@ -221,6 +268,7 @@ def append_audit(
                 object_id=object_id,
                 content_hash=content_hash,
                 destination=destination,
+                item_count=item_count,
             )
             return
         target.execute("BEGIN IMMEDIATE")
@@ -233,6 +281,7 @@ def append_audit(
                 object_id=object_id,
                 content_hash=content_hash,
                 destination=destination,
+                item_count=item_count,
             )
         except BaseException:
             target.execute("ROLLBACK")
@@ -251,6 +300,7 @@ def append_audit(
                 object_id=object_id,
                 content_hash=content_hash,
                 destination=destination,
+                item_count=item_count,
             )
         return
     target.append_audit(
@@ -260,6 +310,7 @@ def append_audit(
         object_id=object_id,
         content_hash=content_hash,
         destination=destination,
+        item_count=item_count,
     )
 
 
@@ -273,11 +324,12 @@ def verify_audit_chain(store: "SqliteStore") -> tuple[bool, int, int | None]:
     """
     rows = store._connect().execute(
         "SELECT seq, case_id, ts, action, object_type, object_id, content_hash,"
-        " destination, prev_hash, entry_hash FROM audit_log ORDER BY seq"
+        " destination, prev_hash, entry_hash, item_count FROM audit_log ORDER BY seq"
     ).fetchall()
     prev = GENESIS_PREV_HASH
     for row in rows:
         fields = {field: row[field] for field in _CHAIN_FIELDS}
+        fields["item_count"] = row["item_count"]
         if (
             row["prev_hash"] != prev
             or compute_entry_hash(fields) != row["entry_hash"]

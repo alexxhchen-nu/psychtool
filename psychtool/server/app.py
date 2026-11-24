@@ -35,6 +35,9 @@ from psychtool import __version__
 from psychtool.core.intake_claims import ClaimSuggestion, accept_suggestion, suggest_claims
 from psychtool.core.ingest import (
     MAX_UPLOAD_BYTES,
+    PROTECTED_CHECK_FAILED_REASON,
+    PROTECTED_CONTENT_MESSAGE,
+    ProtectedContentError,
     ServerUploadError,
     import_upload,
     parse_server_upload,
@@ -42,6 +45,7 @@ from psychtool.core.ingest import (
 from psychtool.core.egress import (
     EgressApprovalError,
     EgressBlockedError,
+    EgressProtectedContentError,
     EgressPurpose,
     EgressRequest,
     EgressStaleError,
@@ -58,7 +62,7 @@ from psychtool.core.sections import (
     save_section,
     section_states,
 )
-from psychtool.config import Config, load_config
+from psychtool.config import Config, debug_tracebacks_enabled, load_config
 from psychtool.gateway.client import (
     EgressOutputBlockedError,
     NetworkForbiddenError,
@@ -235,9 +239,20 @@ def create_app(session_token: str | None = None) -> FastAPI:
         only the class name is logged, exactly once, here. The response body
         is a fixed string; the security headers are attached by
         SecurityHeadersASGIMiddleware, which wraps the outermost stack.
+
+        Dev-only exception (ADR 0013): with the debug-tracebacks switch on
+        the full traceback is logged instead — allowed only for the synthetic
+        tier (the decider re-checks the env var *and* the tier, so a real-tier
+        app never logs tracebacks even if PSYCHTOOL_DEBUG_TRACEBACKS=1 leaked
+        into its environment). ``load_config`` likewise never raises here:
+        real tier + env=1 simply yields debug_tracebacks=False; the startup
+        refusal for that combination lives in server/main.py.
         """
         _ = request
-        logger.error("unhandled error: %s", type(exc).__name__)
+        if debug_tracebacks_enabled(load_config()):
+            logger.error("unhandled error (debug tracebacks ON)", exc_info=exc)
+        else:
+            logger.error("unhandled error: %s", type(exc).__name__)
         return JSONResponse(status_code=500, content={"detail": "internal error"})
 
     @app.get("/api/health")
@@ -322,9 +337,17 @@ def create_app(session_token: str | None = None) -> FastAPI:
                 content={"detail": str(exc), "reason": exc.reason},
             )
         try:
-            material, findings = import_upload(
+            material, findings, blocked_count = import_upload(
                 case, filename=file.filename or "", data=data,
                 material_id=material_id, title=title, provider=provider, date=date,
+            )
+        except ProtectedContentError as exc:
+            # R13 (ADR 0013): fixed {detail, reason} bodies; 503 for a checker
+            # failure (the service is degraded), 400 when content is blocked.
+            status = 503 if exc.reason == PROTECTED_CHECK_FAILED_REASON else 400
+            return JSONResponse(
+                status_code=status,
+                content={"detail": str(exc), "reason": exc.reason},
             )
         except (UnicodeError, KeyError, ValueError) as exc:
             # Fixed detail: the exception message may quote the uploaded text.
@@ -333,8 +356,12 @@ def create_app(session_token: str | None = None) -> FastAPI:
             ) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail="import unavailable") from exc
-        return {"material": material.model_dump(), "identifier_findings": findings,
-                "requires_human_review": True}
+        response = {"material": material.model_dump(), "identifier_findings": findings,
+                    "blocked_paragraphs": blocked_count,
+                    "requires_human_review": True}
+        if blocked_count:
+            response["blocked_reason"] = PROTECTED_CONTENT_MESSAGE
+        return response
 
     @app.post("/api/workspaces/{case_id}/materials/paste")
     def paste_material(case_id: str, body: PasteMaterialPayload) -> dict:
@@ -346,10 +373,17 @@ def create_app(session_token: str | None = None) -> FastAPI:
             )
         try:
             data = body.text.encode("utf-8")
-            material, findings = import_upload(
+            material, findings, blocked_count = import_upload(
                 case, filename="pasted-synthetic-text.txt", data=data,
                 material_id=body.material_id, title=body.title,
                 provider=body.provider, date=body.date,
+            )
+        except ProtectedContentError as exc:
+            # R13 (ADR 0013): fixed {detail, reason} bodies, as for uploads.
+            status = 503 if exc.reason == PROTECTED_CHECK_FAILED_REASON else 400
+            return JSONResponse(
+                status_code=status,
+                content={"detail": str(exc), "reason": exc.reason},
             )
         except (UnicodeError, KeyError, ValueError) as exc:
             raise HTTPException(
@@ -361,8 +395,12 @@ def create_app(session_token: str | None = None) -> FastAPI:
         # here means the file form stops asking once any material was
         # confirmed as synthetic (ADR 0012). One audit row, set-once.
         case.confirm_synthetic()  # audit row written in the same transaction
-        return {"material": material.model_dump(), "identifier_findings": findings,
-                "requires_human_review": True}
+        response = {"material": material.model_dump(), "identifier_findings": findings,
+                    "blocked_paragraphs": blocked_count,
+                    "requires_human_review": True}
+        if blocked_count:
+            response["blocked_reason"] = PROTECTED_CONTENT_MESSAGE
+        return response
 
     @app.get("/api/workspaces/{case_id}/claims")
     def claims(case_id: str) -> list[dict]:
@@ -437,6 +475,16 @@ def create_app(session_token: str | None = None) -> FastAPI:
                 purpose=body.purpose,
                 config=load_config(),
                 source_refs=source_refs,
+            )
+        except EgressProtectedContentError as exc:
+            # R13 (ADR 0013): material-derived text tripped the protected
+            # screen at prepare time; refuse with a fixed reason body.
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "the source material could not be used",
+                    "reason": "protected_content",
+                },
             )
         except (EgressBlockedError, KeyError, ValueError, ValidationError, OSError) as exc:
             raise HTTPException(status_code=400, detail="invalid egress request") from exc

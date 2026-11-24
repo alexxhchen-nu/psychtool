@@ -62,6 +62,23 @@ export function summarizeUpload(result: UploadResult): UploadSummary {
   }
 }
 
+/**
+ * R13 (ADR 0013): the held-back notice for paragraphs the protected-content
+ * screen dropped before storage. Fixed wording, singular/plural by count;
+ * it never mentions filenames, titles or any text from the upload.
+ */
+export function heldBackNotice(count: number | undefined | null): string | null {
+  if (!count || count < 1) return null
+  if (count === 1) {
+    return '1 paragraph held back: it appears to contain test items, norms or scoring rules. '
+      + 'It was not added to this case and will never be sent to the AI assistant. '
+      + 'A way to request release will come in a later version.'
+  }
+  return `${count} paragraphs held back: they appear to contain test items, norms or scoring rules. `
+    + 'They were not added to this case and will never be sent to the AI assistant. '
+    + 'A way to request release will come in a later version.'
+}
+
 export function uploadErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     // The server's fixed rejection message is safe to show verbatim: it is a
