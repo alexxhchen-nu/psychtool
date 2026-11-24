@@ -105,7 +105,12 @@ class LocalSecurityMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path.startswith(_API_PREFIX) and path != _HEALTH_PATH:
             presented = request.headers.get(SESSION_HEADER, "")
-            if not secrets.compare_digest(presented, self._session_token):
+            # Compare bytes: str compare_digest raises on non-ASCII input,
+            # which would turn a bad token into a 500 instead of a 401.
+            if not secrets.compare_digest(
+                presented.encode("utf-8", "surrogateescape"),
+                self._session_token.encode("utf-8"),
+            ):
                 return JSONResponse(
                     {"detail": "unauthorized"},
                     status_code=401,

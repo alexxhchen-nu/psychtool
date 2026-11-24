@@ -500,4 +500,20 @@ def _mount_spa(app: FastAPI, session_token: str) -> None:
         return _index_response()
 
 
-app = create_app()
+
+_default_app: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    """Build the module-level ``app`` on first use, not at import.
+
+    Importing this module must not open the default database: ``main()``
+    runs the cloud-sync data-dir check first (ADR 0011, S4) and only then
+    builds the app. ``uvicorn psychtool.server.app:app`` still works.
+    """
+    global _default_app
+    if name == "app":
+        if _default_app is None:
+            _default_app = create_app()
+        return _default_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

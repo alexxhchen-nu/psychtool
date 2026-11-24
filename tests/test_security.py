@@ -187,3 +187,12 @@ def test_main_refuses_public_hostname(monkeypatch):
     monkeypatch.setenv("PSYCHTOOL_HOST", "example.com")
     with pytest.raises(SystemExit):
         server_main.main()
+
+
+def test_non_ascii_token_is_401_not_500(client):
+    """A non-ASCII header value must be refused cleanly, not crash the check."""
+    response = client.get(
+        "/api/workspaces", headers={"X-Psychtool-Token": "\u00e9t\u00e9".encode("utf-8")}
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "unauthorized"}

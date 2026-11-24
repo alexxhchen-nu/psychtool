@@ -148,7 +148,7 @@
 
 ---
 
-## 2026-11-24 20:41 CST — PT-03：本地安全基線與僅附加稽核日誌（S3/S4/S6）
+## 2026-11-24 14:41 CST — PT-03：本地安全基線與僅附加稽核日誌（S3/S4/S6）
 
 **執行者**：kimi-for-coding via Grok Workhorse
 
@@ -185,13 +185,12 @@
 
 - Playwright e2e（含新 `security.e2e.ts`）需在沙箱外以 repo 預設設定執行。
 - 稽核鏈防「可被發現的竄改」，不防有檔案權限者 drop trigger 後重算整條鏈（ADR 0011 已聲明）；本專案尚未符合 HIPAA。
-- `web/tsconfig.app.tsbuildinfo` 為既有受追蹤建置產物，build 後有變動（未提交）。
 
 ---
 
-## 2026-11-25 05:12 CST — PT-03 修正：稽核列與狀態變更同交易（supervisor round 2）
+## 2026-11-24 15:15 CST — PT-03 修正：稽核列與狀態變更同交易（supervisor round 2）
 
-**執行者**：kimi-for-coding via Grok Workhorse
+**執行者**：kimi-for-coding → deepseek-flash via Grok Workhorse（Kimi 5 小時配額用盡，HTTP 429，自動 fallback）
 
 ### 變更
 

@@ -7,18 +7,19 @@ the session token value is never printed.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
 import uvicorn
 
-from psychtool.server.app import create_app
 from psychtool.server.selfcheck import DataDirError, check_data_dir_not_synced, run_self_checks
 from psychtool.store.sqlite_store import default_db_path
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+_LOG_HANDLER_NAME = "psychtool-startup"
 
 
 def _resolve_host() -> str:
@@ -46,7 +47,24 @@ def _resolve_port() -> int:
     return port
 
 
+def _configure_logging() -> None:
+    """Show the ``psychtool`` logger's INFO lines (the self-check items).
+
+    Without a handler, Python drops INFO records, so the startup log would
+    show only warnings. Messages are fixed strings: no user text, no token.
+    """
+    logger = logging.getLogger("psychtool")
+    for existing in [h for h in logger.handlers if h.get_name() == _LOG_HANDLER_NAME]:
+        logger.removeHandler(existing)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.set_name(_LOG_HANDLER_NAME)
+    handler.setFormatter(logging.Formatter("%(levelname)s:     %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
 def main() -> None:
+    _configure_logging()
     host = _resolve_host()
     port = _resolve_port()
     # Cheap pre-check so a cloud-synced data dir fails before the app builds;
@@ -56,6 +74,10 @@ def main() -> None:
     except DataDirError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from None
+
+    # Imported here so the data-dir check above runs before anything opens
+    # the database.
+    from psychtool.server.app import create_app
 
     app = create_app()
     run_self_checks(
