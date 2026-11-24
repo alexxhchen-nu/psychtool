@@ -84,9 +84,16 @@ def host_is_loopback(host_header: str | None) -> bool:
         end = value.find("]")
         if end == -1:
             return False
-        hostname = value[1:end]
+        hostname, rest = value[1:end], value[end + 1:]
+        port = rest[1:] if rest.startswith(":") else None
+        if rest and port is None:
+            return False
     else:
-        hostname = value.rsplit(":", 1)[0] if ":" in value else value
+        hostname, _, port = value.partition(":")
+        port = port if ":" in value else None
+    # The optional port must be plain digits: "127.0.0.1:80@evil" is refused.
+    if port is not None and not (port.isascii() and port.isdigit()):
+        return False
     return hostname.lower() in _LOOPBACK_HOSTNAMES
 
 

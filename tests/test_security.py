@@ -110,7 +110,10 @@ def test_short_env_token_rejected(tmp_path, monkeypatch):
         create_app()
 
 
-@pytest.mark.parametrize("host", ["evil.example", "127.0.0.1.evil.example", "localhost.evil"])
+@pytest.mark.parametrize(
+    "host",
+    ["evil.example", "127.0.0.1.evil.example", "localhost.evil", "127.0.0.1:80@evil.example", "[::1]evil", "localhost:"],
+)
 def test_host_check_rejects_non_loopback(client, app, host):
     assert client.get("/api/health", headers={"host": host}).status_code == 400
     assert client.get("/", headers={"host": host}).status_code == 400
