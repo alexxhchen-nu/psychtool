@@ -353,11 +353,12 @@
 
 - **Sentence splitting:** the ported prototype regex cut sentences at "a.m." ("until about 1 a" / "before falling asleep"). A "." now ends a sentence only when it is followed by whitespace and doesn't come after a known abbreviation (a.m., p.m., Dr., Mr., e.g., …). Decimals like "7.5" stay inside the sentence.
 - **Minimum length:** the prototype's 6-character minimum dropped short Chinese sentences (e.g. "他周末会补觉"). Quotes that contain CJK now need 4 characters.
+- **Performance (found in review):** evidence extraction was quadratic. 8,000 paragraphs took 1.5 s, and about 100k paragraphs (9 MB, under the upload limit) didn't finish in 2 minutes. There is now a per-material passage index, and the abbreviation check no longer copies the text before each dot. A perf guard test was added. Live: an 8.7 MB upload gives `/evidence` 190,000 items in 3.4 s.
 - **Scroll e2e (added by the supervisor):** the R4-AC2 test now uses a 41-paragraph material, so the highlight is only in view if the panel scrolled. It was confirmed failing with `scrollIntoView` removed and passing with it.
 
 ### Verification (fresh clone)
 
-- `uv run --extra dev pytest -q` → **579 passed**; `bun test` → **129 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **7 passed** (new: 2 evidence tests covering R4-AC1/AC2/AC3).
+- `uv run --extra dev pytest -q` → **583 passed**; `bun test` → **129 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **7 passed** (new: 2 evidence tests covering R4-AC1/AC2/AC3).
 - Mutation checks:
   - NFKC removed → 5 R13 tests fail.
   - Span check bypassed → the dropped-candidate test fails.
