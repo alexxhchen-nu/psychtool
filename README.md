@@ -26,6 +26,12 @@ psychtool 是一個幫助個人寫報告的臨床寫作工作區，目標使用�
 
 **瀏覽器應用程式（本地原型）。** 除 CLI 外，本儲存庫另含本機瀏覽器原型：建立合成個案、貼上合成文字（規則式擷取候選陳述）、人工核准後經閘道送出生成請求、把產出存為段落，重新整理後仍在。**預設使用離線 FakeTransport 模型，不連網、不需 API 金鑰**；只有明確設定 `PSYCHTOOL_TRANSPORT=http` 才會走真實端點。原型**尚未符合 HIPAA**，頁面常駐橫幅亦如此提示；僅用合成資料。
 
+伺服器／瀏覽器路徑的個案儲存為**單一 SQLite 資料庫**（預設 `local-data/psychtool.db`，可用 `PSYCHTOOL_DB_PATH` 覆寫；ADR 0010），以複合主鍵與外鍵在資料庫層強制個案隔離；ADR 0005 的 JSON 工作區仍是 CLI／評測鏈路的格式。把既有 JSON 工作區匯入資料庫：
+
+```bash
+uv run psychtool import-json fixtures/case_a001   # 匯入合成範例個案（--db 可指定資料庫路徑）
+```
+
 ```bash
 cd web && bun install && bun run build   # 建置前端（FastAPI 直接供應 web/dist）
 cd .. && uv run psychtool-server         # 開啟 http://127.0.0.1:8000

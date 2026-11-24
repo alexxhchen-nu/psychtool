@@ -26,6 +26,12 @@ The repository holds requirements and boundaries, official privacy-source resear
 
 **Browser application (local prototype).** In addition to the CLI, the repository contains a local browser prototype: create a synthetic case, paste synthetic text (rule-based candidate extraction), approve generation requests through the egress gateway, save the output as a section, and find it again after reload. **It uses the offline FakeTransport model by default — no network, no API key**; a real endpoint is used only when `PSYCHTOOL_TRANSPORT=http` is set explicitly. The prototype is **not HIPAA compliant**, as the persistent in-page banner states; use synthetic data only.
 
+The server/browser path stores cases in a **single SQLite database** (default `local-data/psychtool.db`, overridable via `PSYCHTOOL_DB_PATH`; ADR 0010), with composite primary keys and foreign keys enforcing per-case isolation at the database layer. The ADR 0005 JSON workspaces remain the format for the CLI/evaluation pipeline. Import an existing JSON workspace into the database:
+
+```bash
+uv run psychtool import-json fixtures/case_a001   # import the synthetic sample case (--db selects the database path)
+```
+
 ```bash
 cd web && bun install && bun run build   # build the frontend (FastAPI serves web/dist)
 cd .. && uv run psychtool-server         # open http://127.0.0.1:8000
