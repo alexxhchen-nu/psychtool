@@ -1,0 +1,18 @@
+{
+  "id": "m3",
+  "case_id": "case-a001",
+  "version": 1,
+  "title": "Synthetic school observation",
+  "provider": "synthetic author C",
+  "date": "2026-10-12",
+  "passages": [
+    {
+      "id": "p001",
+      "text": "The synthetic teacher noted the participant \"move around\" during two of five observed lessons, without recording a duration."
+    },
+    {
+      "id": "p002",
+      "text": "All three in-class assignments collected in October were returned on time."
+    }
+  ]
+}
