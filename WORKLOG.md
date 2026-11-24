@@ -92,3 +92,28 @@
 ### 未解決事項
 
 - E2E 瀏覽器執行仍待 supervisor 於沙箱外複跑。
+
+---
+
+## 2026-11-24 12:38 CST — PT-01 supervisor 核驗（沙箱外、全新 clone）
+
+**執行者**：Grok Workhorse supervisor（worker：kimi-for-coding；未觸發 deepseek fallback）
+
+### 變更
+
+- run 4：`create_workspace` 併發建案競態（`FileExistsError`）回 409，並加測試；移除 `tests/test_fake_transport.py` 未使用的 import。
+- `web/.gitignore` 加入 `test-results/`、`playwright-report/`。
+- 本檔時區標記由 CDT 更正為 CST（11 月為標準時間）。
+
+### 實際核驗結果（分支 `pt-01-walking-skeleton` @ `170807f`，全新 clone）
+
+- `uv run --extra dev pytest -q` → **261 passed**，exit 0。
+- `cd web && bun install --frozen-lockfile` → exit 0；`bun test` → **99 pass / 0 fail**；`bun run build` → exit 0。
+- `cd web && bun run e2e` → **1 passed**（Chromium，建案 → 貼上 → 接受 1 條證據 → prepare → approve → send（FakeTransport）→ 存段落 → 重新整理仍在）。
+- 手動實跑 `uv run psychtool-server`：以 curl 走完整路徑；未核准即 send → 409；重送 → 409；重啟伺服器後段落文字與證據仍在；伺服器日誌不含材料正文。
+- GitHub Actions `ci`（push）在先前提交上為 success。
+
+### 未解決事項
+
+- `web/tsconfig.app.tsbuildinfo` 為既有受追蹤的建置產物，每次 build 都會變動（本 PR 未提交其變動）。
+- CLI `psychtool send` 仍直接使用真實 `http_transport`（既有行為，非 PT-01 範圍）。
