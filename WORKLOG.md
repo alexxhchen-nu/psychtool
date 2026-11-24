@@ -319,12 +319,14 @@
 - The JSON workspace import kept renumbering passages after a block, which would have pointed claims at the wrong passages. It now keeps the original passage ids, and rejects the whole import if a claim quotes protected text or cites a blocked passage.
 - The egress re-screen skipped refs it could not load (fail-open). Any load or check error now refuses the prepare.
 - Identifier findings are now computed over the kept paragraphs only.
+- Found in review: the CLI `psychtool import` command wrote to the JSON material store without the screen. The screen now runs inside `workspace.import_material`, which covers the CLI and the eval harness. The CLI prints a held-back line, or exits 1 with nothing written.
 - `fixtures/adolescent-background.json`: the synthetic sentence "本资料没有提供测验分数、诊断或常模资料。" matched the keyword list (a false positive of keyword matching). It now reads "…或标准化比较资料。" Meaning unchanged.
 
 ### Verification (fresh clone)
 
-- `uv run --extra dev pytest -q` → **531 passed**; `bun test` → **120 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **5 passed** (new: `R13-AC1 norm table paragraph is held back`).
-- Mutation checks: with the keyword check disabled, 6 R13 tests fail; with the real-tier refusal removed, the switch test fails.
+- `uv run --extra dev pytest -q` → **534 passed**; `bun test` → **120 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **5 passed** (new: `R13-AC1 norm table paragraph is held back`).
+- Mutation checks: with the keyword check disabled, 6 R13 tests fail; with the real-tier refusal removed, the switch test fails; with the screen removed from `workspace.import_material`, the 3 CLI tests fail.
+- Live CLI: `psychtool import` of a file with a "Scoring key: …" paragraph → exit 0 and a held-back line, with the text absent from the stored JSON. An all-blocked file → exit 1, no material file.
 - Live `psychtool-server` (synthetic):
   - An upload with a "Norm table: …" paragraph → 200, `blocked_paragraphs: 1`, the plain reason shown. Only the 2 normal paragraphs are stored; the blocked text is in neither the DB dump, the response nor the log. One `material.protected_blocked` audit row (count 1 + sha256), and the chain verifies.
   - "normal / Normally / 常规" → nothing blocked. All paragraphs blocked → 400 `protected_content`, no material. Paste is filtered the same way.
