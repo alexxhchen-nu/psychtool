@@ -78,7 +78,7 @@ def test_claims_lists_are_isolated(seeded):
 
 def test_accepting_b_claim_under_a_url_fails(seeded):
     """A suggestion built from B's material cannot be accepted through A."""
-    client, store = seeded
+    client, _ = seeded
     suggestions = client.get(
         "/api/workspaces/case-b/materials/m1/suggestions",
         params={"provider_role": "self_report"},

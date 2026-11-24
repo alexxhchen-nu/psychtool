@@ -148,7 +148,7 @@ def import_json_cmd(
             typer.echo(f"case already exists: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         raise
-    typer.echo(f"imported case {case_id} into {db}")
+    typer.echo(f"imported case {case_id} into {db_path}")
 
 
 claims_app = typer.Typer()

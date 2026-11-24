@@ -128,7 +128,7 @@ def _is_case_store(target: object) -> bool:
 
 
 def select_claims(workspace: Path, claim_ids: list[str]) -> list[Claim]:
-    from psychtool.core.claims import get_claim, list_claims
+    from psychtool.core.claims import list_claims
 
     if _is_case_store(workspace):
         available = {c.id: c for c in workspace.list_claims()}

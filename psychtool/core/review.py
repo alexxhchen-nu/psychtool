@@ -8,9 +8,8 @@ their old locator remains readable but is no longer treated as current.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
 
-from psychtool.core.egress_store import EgressStore, JsonDirStore, egress_transition_lock
+from psychtool.core.egress_store import JsonDirStore
 from psychtool.core.workspace import latest_version
 from psychtool.core.claims import Claim, get_claim, list_claims, mark_status
 from psychtool.core.draft import list_drafts, load_draft
