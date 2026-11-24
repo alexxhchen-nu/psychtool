@@ -15,13 +15,16 @@ from fastapi.testclient import TestClient
 from psychtool.server.app import create_app
 
 
-def build_client(app: FastAPI, *, token: str | None = None) -> TestClient:
+def build_client(
+    app: FastAPI, *, token: str | None = None, raise_server_exceptions: bool = True
+) -> TestClient:
     """A TestClient with loopback Host and the session token preset."""
     session = token if token is not None else app.state.session_token
     return TestClient(
         app,
         base_url="http://127.0.0.1",
         headers={"X-Psychtool-Token": session},
+        raise_server_exceptions=raise_server_exceptions,
     )
 
 

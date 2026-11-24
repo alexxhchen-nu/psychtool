@@ -11,7 +11,12 @@ def test_text_upload_is_local_and_flags_identifiers(tmp_path, monkeypatch):
     store = SqliteStore(db_path)
     store.create_case("case-a")
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(db_path))
-    response = build_client(create_app()).post(
+    client = build_client(create_app())
+    # R2-AC3: the first file upload needs the per-case confirmation.
+    assert client.post(
+        "/api/workspaces/case-a/synthetic-confirmation"
+    ).status_code == 200
+    response = client.post(
         "/api/workspaces/case-a/materials",
         data={"material_id": "intake", "title": "Intake", "provider": "self", "date": "2026-11-08"},
         files={"file": ("notes.txt", b"Call 312-555-0142.\n\nSleep changed.", "text/plain")},
