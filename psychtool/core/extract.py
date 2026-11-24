@@ -17,7 +17,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from psychtool.core.spans import Span, verify_quote
+from psychtool.core.spans import Span, verify_quote_in
 from psychtool.core.workspace import Material
 
 # Prototype buildCase sentence splitter originally used
@@ -36,14 +36,28 @@ _KNOWN_ABBREVIATIONS = frozenset(
 
 
 def _is_sentence_end(text: str, dot_index: int) -> bool:
-    """True when the "." at ``dot_index`` really ends a sentence."""
+    """True when the "." at ``dot_index`` really ends a sentence.
+
+    Scans backwards from the dot without copying the whole prefix — only the
+    word immediately before the dot matters (at most ~10 chars/dots), so this
+    stays O(1) per "." instead of O(len(text)).
+    """
     if dot_index + 1 < len(text) and not text[dot_index + 1].isspace():
         return False
-    prefix = text[:dot_index].rstrip()
-    word_start = len(prefix)
-    while word_start > 0 and (prefix[word_start - 1].isalnum() or prefix[word_start - 1] == "."):
-        word_start -= 1
-    word = prefix[word_start:].lower().strip(".")
+    index = dot_index
+    # Skip whitespace immediately before the dot.
+    while index > 0 and text[index - 1].isspace():
+        index -= 1
+    # Collect the word before the dot, at most a few characters.
+    chars: list[str] = []
+    while index > 0 and len(chars) < 10:
+        char = text[index - 1]
+        if char.isalnum() or char == ".":
+            chars.append(char)
+            index -= 1
+        else:
+            break
+    word = "".join(reversed(chars)).lower().strip(".")
     return word not in _KNOWN_ABBREVIATIONS
 
 
@@ -166,8 +180,11 @@ def extract_evidence(extractor: Extractor, materials: list[Material]) -> Evidenc
     items: list[EvidenceCandidate] = []
     dropped = 0
     for material in materials:
+        # Build the passage index once per material instead of rescanning
+        # material.passages for every candidate (R4 scale guard).
+        passages_by_id = {passage.id: passage.text for passage in material.passages}
         for candidate in extractor.extract(material):
-            if verify_quote(material, candidate.span, candidate.quote):
+            if verify_quote_in(passages_by_id, material, candidate.span, candidate.quote):
                 items.append(candidate)
             else:
                 dropped += 1

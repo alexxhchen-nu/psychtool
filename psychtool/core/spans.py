@@ -62,6 +62,28 @@ def span_text(material: Material, span: Span) -> str:
     return passage.text[span.start : span.end]
 
 
+def verify_quote_in(
+    passages_by_id: dict[str, str],
+    material: Material,
+    span: Span,
+    quote: str,
+) -> bool:
+    """Like :func:`verify_quote`, but against a prebuilt ``passage_id -> text``
+    index (built once per material in ``extract_evidence`` instead of rescanning
+    ``material.passages`` for every candidate). Same semantics, never raises.
+    """
+    if not quote:
+        return False
+    if span.material_id != material.id or span.material_version != material.version:
+        return False
+    text = passages_by_id.get(span.passage_id)
+    if text is None:
+        return False
+    if not (0 <= span.start < span.end <= len(text)):
+        return False
+    return text[span.start : span.end] == quote
+
+
 def verify_quote(material: Material, span: Span, quote: str) -> bool:
     """True only when ``passage.text[start:end] == quote`` verbatim.
 
@@ -69,11 +91,9 @@ def verify_quote(material: Material, span: Span, quote: str) -> bool:
     an empty quote. No normalization, no strip — the quote matches exactly or
     not at all (extract_evidence drops non-matches, never repairs them).
     """
-    if not quote:
-        return False
-    passage = _find_passage(material, span)
-    if passage is None:
-        return False
-    if not (0 <= span.start < span.end <= len(passage.text)):
-        return False
-    return passage.text[span.start : span.end] == quote
+    return verify_quote_in(
+        {passage.id: passage.text for passage in material.passages},
+        material,
+        span,
+        quote,
+    )
