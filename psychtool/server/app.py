@@ -4,11 +4,16 @@ Serves the JSON API under ``/api`` and, when a production build exists in
 ``web/dist``, serves the React SPA with client-side routing fallback. During
 development the SPA is served by Vite (see ``web/vite.config.ts``), which
 proxies ``/api`` to this server.
+
+Persistence (ADR 0010): all case data lives in one SQLite database
+(``PSYCHTOOL_DB_PATH``, default ``local-data/psychtool.db``). Every request
+opens one ``CaseStore`` bound to the URL ``case_id``; the store refuses ids
+that do not pass the shared case-id pattern, and all SQL is parameterized by
+``case_id`` so one case can never read or mutate another case's rows.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -19,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError
 
 from psychtool import __version__
-from psychtool.core.claims import list_claims
 from psychtool.core.intake_claims import ClaimSuggestion, accept_suggestion, suggest_claims
 from psychtool.core.ingest import import_upload, MAX_UPLOAD_BYTES
 from psychtool.core.egress import (
@@ -41,18 +45,24 @@ from psychtool.core.sections import (
     save_section,
     section_states,
 )
-from psychtool.core.workspace import get_known_names, list_materials, set_known_names
-from psychtool.config import load_config
+from psychtool.config import Config, load_config
 from psychtool.gateway.client import (
     EgressOutputBlockedError,
     NetworkForbiddenError,
     send_approved,
 )
+from psychtool.gateway.fake import fake_transport
 from psychtool.gateway.http import http_transport
+from psychtool.store.sqlite_store import (
+    CaseExistsError,
+    CaseStore,
+    SqliteStore,
+    UnknownCaseError,
+    default_db_path,
+)
 
 # Project root is two levels up from psychtool/server/app.py.
 _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
-_DEFAULT_WORKSPACES_DIR = str(Path(__file__).resolve().parents[2] / "local-data" / "workspaces")
 
 
 class SectionPayload(BaseModel):
@@ -87,6 +97,26 @@ class ApproveEgressPayload(BaseModel):
     synthetic_auto_reason: str | None = None
 
 
+_CASE_ID_RE = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+
+
+class CreateCasePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str = Field(pattern=_CASE_ID_RE)
+
+
+class PasteMaterialPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_id: str
+    title: str
+    provider: str
+    date: str
+    text: str
+    synthetic_confirmed: bool = False
+
+
 def _egress_response(request: EgressRequest) -> dict:
     """Return the persisted review surface without runtime-only configuration."""
     return {
@@ -111,21 +141,35 @@ def _egress_response(request: EgressRequest) -> dict:
     }
 
 
-def _workspaces_root() -> Path:
-    return Path(os.environ.get("PSYCHTOOL_WORKSPACES_DIR", _DEFAULT_WORKSPACES_DIR))
+def _db_path() -> Path:
+    return default_db_path()
 
 
-def _workspace_path(case_id: str) -> Path:
-    """Resolve a workspace directory under the configured root, never outside it."""
-    root = _workspaces_root().resolve()
-    candidate = (root / case_id).resolve()
-    if candidate != root and root not in candidate.parents:
-        raise HTTPException(status_code=400, detail="invalid case id")
-    return candidate
+def _select_transport(config: Config):
+    """Pick the model transport from config; the offline fake is the default.
+
+    ``http_transport`` is reachable only through the explicit
+    ``PSYCHTOOL_TRANSPORT=http`` opt-in, so the default dev run, tests and the
+    e2e never open a socket. Every existing gateway check (approval hash,
+    send-once lock, data tier, output PII gate) runs before any transport.
+    """
+    if config.transport == "http":
+        return http_transport
+    return fake_transport
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="psychtool", version=__version__)
+    store = SqliteStore(_db_path())
+
+    def _case(case_id: str) -> CaseStore:
+        """Bind one case; 400 for malformed ids, 404 for unknown ones."""
+        try:
+            return store.case(case_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid case id") from exc
+        except UnknownCaseError as exc:
+            raise HTTPException(status_code=404, detail="case not found") from exc
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error(request, exc) -> JSONResponse:
@@ -149,18 +193,22 @@ def create_app() -> FastAPI:
 
     @app.get("/api/workspaces")
     def workspaces() -> list[dict]:
-        root = _workspaces_root()
-        if not root.is_dir():
-            return []
-        return [
-            {"case_id": d.name}
-            for d in sorted(root.iterdir())
-            if d.is_dir() and (d / "meta.json").is_file()
-        ]
+        return [{"case_id": case_id} for case_id in store.list_cases()]
+
+    @app.post("/api/workspaces", status_code=201)
+    def create_workspace(body: CreateCasePayload) -> dict:
+        case_id = body.case_id
+        try:
+            store.create_case(case_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid case id") from exc
+        except CaseExistsError as exc:
+            raise HTTPException(status_code=409, detail="case already exists") from exc
+        return {"case_id": case_id}
 
     @app.get("/api/workspaces/{case_id}/materials")
     def materials(case_id: str) -> list[dict]:
-        return [m.model_dump() for m in list_materials(_workspace_path(case_id))]
+        return [m.model_dump() for m in _case(case_id).list_materials()]
 
     @app.post("/api/workspaces/{case_id}/materials")
     async def upload_material(case_id: str, file: UploadFile = File(...),
@@ -169,7 +217,7 @@ def create_app() -> FastAPI:
         try:
             data = await file.read(MAX_UPLOAD_BYTES + 1)
             material, findings = import_upload(
-                _workspace_path(case_id), filename=file.filename or "", data=data,
+                _case(case_id), filename=file.filename or "", data=data,
                 material_id=material_id, title=title, provider=provider, date=date,
             )
         except (UnicodeError, KeyError, ValueError) as exc:
@@ -179,15 +227,39 @@ def create_app() -> FastAPI:
         return {"material": material.model_dump(), "identifier_findings": findings,
                 "requires_human_review": True}
 
+    @app.post("/api/workspaces/{case_id}/materials/paste")
+    def paste_material(case_id: str, body: PasteMaterialPayload) -> dict:
+        case = _case(case_id)
+        if not body.synthetic_confirmed:
+            raise HTTPException(
+                status_code=400,
+                detail="pasted text must be confirmed as synthetic",
+            )
+        try:
+            data = body.text.encode("utf-8")
+            material, findings = import_upload(
+                case, filename="pasted-synthetic-text.txt", data=data,
+                material_id=body.material_id, title=body.title,
+                provider=body.provider, date=body.date,
+            )
+        except (UnicodeError, KeyError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="pasted material could not be accepted"
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail="paste import unavailable") from exc
+        return {"material": material.model_dump(), "identifier_findings": findings,
+                "requires_human_review": True}
+
     @app.get("/api/workspaces/{case_id}/claims")
     def claims(case_id: str) -> list[dict]:
-        return [c.model_dump() for c in list_claims(_workspace_path(case_id))]
+        return [c.model_dump() for c in _case(case_id).list_claims()]
 
     @app.get("/api/workspaces/{case_id}/materials/{material_id}/suggestions")
     def claim_suggestions(case_id: str, material_id: str, provider_role: str) -> list[dict]:
         try:
             return [s.model_dump() for s in suggest_claims(
-                _workspace_path(case_id), material_id, provider_role=provider_role
+                _case(case_id), material_id, provider_role=provider_role
             )]
         except (KeyError, ValueError, ValidationError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -195,27 +267,27 @@ def create_app() -> FastAPI:
     @app.post("/api/workspaces/{case_id}/claims")
     def accept_claim(case_id: str, body: ClaimSuggestion) -> dict:
         try:
-            return accept_suggestion(_workspace_path(case_id), body).model_dump()
+            return accept_suggestion(_case(case_id), body).model_dump()
         except (KeyError, ValueError, ValidationError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/workspaces/{case_id}/names")
     def names(case_id: str) -> dict:
-        return {"names": list(get_known_names(_workspace_path(case_id)))}
+        return {"names": list(_case(case_id).get_known_names())}
 
     @app.put("/api/workspaces/{case_id}/names")
     def put_names(case_id: str, body: NamesPayload) -> dict:
-        return {"names": list(set_known_names(_workspace_path(case_id), body.names))}
+        return {"names": list(_case(case_id).set_known_names(body.names))}
 
     @app.get("/api/workspaces/{case_id}/sections")
     def sections(case_id: str, template_id: str) -> list[dict]:
-        return section_states(_workspace_path(case_id), template_id)
+        return section_states(_case(case_id), template_id)
 
     @app.put("/api/workspaces/{case_id}/sections/{section_id}")
     def put_section(case_id: str, section_id: str, body: SectionPayload) -> dict:
         try:
             draft = save_section(
-                _workspace_path(case_id),
+                _case(case_id),
                 template_id=body.template_id,
                 template_version=body.template_version,
                 section_id=section_id,
@@ -231,9 +303,9 @@ def create_app() -> FastAPI:
     @app.post("/api/workspaces/{case_id}/egress/prepare")
     def prepare_egress(case_id: str, body: PrepareEgressPayload) -> dict:
         try:
-            workspace = _workspace_path(case_id)
+            case = _case(case_id)
             prompt, source_refs = build_section_request_input(
-                workspace,
+                case,
                 template_id=body.template_id,
                 template_version=body.template_version,
                 section_id=body.section_id,
@@ -241,7 +313,7 @@ def create_app() -> FastAPI:
                 instructions=body.instructions,
             )
             request = prepare_egress_request(
-                workspace,
+                case,
                 prompt=prompt,
                 purpose=body.purpose,
                 config=load_config(),
@@ -254,7 +326,7 @@ def create_app() -> FastAPI:
     @app.get("/api/workspaces/{case_id}/egress/{request_id}")
     def get_egress(case_id: str, request_id: str) -> dict:
         try:
-            request = get_egress_request(_workspace_path(case_id), request_id)
+            request = get_egress_request(_case(case_id), request_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="egress request not found") from exc
         except (ValueError, ValidationError) as exc:
@@ -272,18 +344,18 @@ def create_app() -> FastAPI:
                 status_code=400,
                 detail="exactly one approval method is required",
             )
-        workspace = _workspace_path(case_id)
+        case = _case(case_id)
         try:
             if body.reviewer is not None:
                 request = approve_human(
-                    workspace,
+                    case,
                     request_id,
                     reviewer=body.reviewer,
                     content_hash=body.content_hash,
                 )
             else:
                 request = approve_synthetic(
-                    workspace,
+                    case,
                     request_id,
                     reason=body.synthetic_auto_reason or "",
                     content_hash=body.content_hash,
@@ -300,12 +372,13 @@ def create_app() -> FastAPI:
 
     @app.post("/api/workspaces/{case_id}/egress/{request_id}/send")
     def send_egress(case_id: str, request_id: str) -> dict:
+        config = load_config()
         try:
             text = send_approved(
-                _workspace_path(case_id),
+                _case(case_id),
                 request_id,
-                config=load_config(),
-                transport=http_transport,
+                config=config,
+                transport=_select_transport(config),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="egress request not found") from exc
@@ -323,7 +396,8 @@ def create_app() -> FastAPI:
 
     @app.post("/api/workspaces/{case_id}/sections/{section_id}/generate")
     def generate(case_id: str, section_id: str) -> None:
-        _ = case_id, section_id
+        # Resolve the case first so unknown ids still surface as 404.
+        _ = section_id, _case(case_id)
         raise HTTPException(
             status_code=410,
             detail="Direct generation is gone; use egress prepare, approve, and send.",
@@ -345,6 +419,10 @@ def _mount_spa(app: FastAPI) -> None:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str) -> FileResponse:
+        # The SPA fallback must never answer API paths: unknown /api/* routes
+        # get a JSON 404, not index.html.
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
         candidate = dist / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)

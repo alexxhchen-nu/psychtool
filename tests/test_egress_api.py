@@ -8,9 +8,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from psychtool.core.claims import add_claim
-from psychtool.core.workspace import import_material, init_workspace, set_known_names
+from psychtool.core.workspace import Passage
 from psychtool.server.app import create_app
+from psychtool.store.sqlite_store import SqliteStore
 
 
 _ENV_VARS = (
@@ -20,6 +20,7 @@ _ENV_VARS = (
     "PSYCHTOOL_DATA_TIER",
     "PSYCHTOOL_API_KEY",
     "PSYCHTOOL_REDACT",
+    "PSYCHTOOL_TRANSPORT",
 )
 
 
@@ -29,15 +30,19 @@ def _clear_psychtool_environment(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def _workspace(tmp_path):
-    workspace = init_workspace(tmp_path / "case-a", case_id="case-a")
-    import_material(
-        workspace, material_id="doc-1", title="Synthetic source",
-        provider="synthetic", date="synthetic date", text="Synthetic observation.",
+def _workspace(tmp_path, monkeypatch):
+    """Seed one case with a material, known names, and one claim via the store."""
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
+    store = SqliteStore(tmp_path / "psychtool.db")
+    store.create_case("case-a")
+    case = store.case("case-a")
+    case.import_material(
+        material_id="doc-1", title="Synthetic source",
+        provider="synthetic", date="synthetic date",
+        passages=[Passage(id="p001", text="Synthetic observation.")],
     )
-    set_known_names(workspace, ["Jane Doe"])
-    add_claim(
-        workspace,
+    case.set_known_names(["Jane Doe"])
+    case.add_claim(
         claim_id="claim-1",
         source_document_id="doc-1",
         source_version=1,
@@ -49,15 +54,18 @@ def _workspace(tmp_path):
         topic="history",
         text="Jane Doe called 312-555-0142 about sleep.",
     )
-    return workspace
+    return case
 
 
 def _configure(monkeypatch, tmp_path, *, tier="real"):
-    monkeypatch.setenv("PSYCHTOOL_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
     monkeypatch.setenv("PSYCHTOOL_BASE_URL", "http://127.0.0.1:11434/v1")
     monkeypatch.setenv("PSYCHTOOL_MODEL", "local-model")
     monkeypatch.setenv("PSYCHTOOL_DATA_TIER", tier)
     monkeypatch.setenv("PSYCHTOOL_API_KEY", "api-key-must-not-leak")
+    # These tests monkeypatch ``http_transport`` (no real network), so they
+    # explicitly opt into the http transport mode to reach it.
+    monkeypatch.setenv("PSYCHTOOL_TRANSPORT", "http")
 
 
 def _prepare_body():
@@ -76,7 +84,7 @@ def _prepare(client):
 
 
 def test_prepare_returns_review_preview_without_calling_transport(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
     calls = []
     app_module = importlib.import_module("psychtool.server.app")
@@ -110,7 +118,7 @@ def test_prepare_returns_review_preview_without_calling_transport(tmp_path, monk
 def test_human_approve_send_and_rebuilt_app_get_persisted_request(
     tmp_path, monkeypatch
 ):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
     calls = []
 
@@ -164,7 +172,7 @@ def test_human_approve_send_and_rebuilt_app_get_persisted_request(
 
 
 def test_synthetic_auto_approval_uses_server_config(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path, tier="synthetic")
     client = TestClient(create_app())
     prepared = _prepare(client).json()
@@ -186,7 +194,7 @@ def test_synthetic_auto_approval_uses_server_config(tmp_path, monkeypatch):
 
 
 def test_synthetic_api_wrong_displayed_hash_rejects_approval_and_send(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path, tier="synthetic")
     calls = []
     app_module = importlib.import_module("psychtool.server.app")
@@ -210,7 +218,7 @@ def test_synthetic_api_wrong_displayed_hash_rejects_approval_and_send(tmp_path, 
 
 
 def test_approve_requires_exactly_one_approval_method(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
     client = TestClient(create_app())
     prepared = _prepare(client).json()
@@ -236,7 +244,7 @@ def test_approve_requires_exactly_one_approval_method(tmp_path, monkeypatch):
 
 
 def test_safe_errors_do_not_echo_request_or_provider_secrets(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
     client = TestClient(create_app())
     prepared = _prepare(client).json()
@@ -284,7 +292,7 @@ def test_safe_errors_do_not_echo_request_or_provider_secrets(tmp_path, monkeypat
     "Jane Doe attended.",
 ])
 def test_output_pii_is_blocked_without_echoing_provider_body(tmp_path, monkeypatch, provider_body):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
     app_module = importlib.import_module("psychtool.server.app")
     monkeypatch.setattr(
@@ -315,7 +323,7 @@ def test_output_pii_is_blocked_without_echoing_provider_body(tmp_path, monkeypat
 
 
 def test_prepare_rejects_caller_controlled_routing_fields(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
     body = _prepare_body() | {
         "provider_base_url": "https://attacker.invalid/v1",

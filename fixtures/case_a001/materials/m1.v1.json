@@ -1,0 +1,18 @@
+{
+  "id": "m1",
+  "case_id": "case-a001",
+  "version": 1,
+  "title": "Synthetic intake interview",
+  "provider": "synthetic author A",
+  "date": "2026-10-05",
+  "passages": [
+    {
+      "id": "p001",
+      "text": "Synthetic participant A reported that weekday mornings feel rushed since the semester started, but weekend routines feel unchanged."
+    },
+    {
+      "id": "p002",
+      "text": "The participant said they keep a paper planner and check it each evening; no digital tracking was used."
+    }
+  ]
+}

@@ -19,7 +19,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, Union
 
 from pydantic import BaseModel
 
@@ -28,10 +28,16 @@ from psychtool.core.draft import build_prompt, select_claims
 from psychtool.core.egress import SourceRef
 from psychtool.core.report_templates import ReportTemplate, load_template
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from psychtool.store.sqlite_store import CaseStore
+
 SectionStatus = Literal["empty", "draft", "needs_review", "approved"]
 ReviewGate = Literal["standard", "licensed_clinician"]
 
 SECTIONS_DIR = "sections"
+
+# A JSON workspace directory, or one case bound inside the SQLite store.
+SectionTarget = Union[Path, str, "CaseStore"]
 
 
 class SectionDraft(BaseModel):
@@ -74,8 +80,24 @@ def _template_gate(template: ReportTemplate, section_id: str) -> ReviewGate:
     raise KeyError(f"section {section_id!r} not in template {template.template_id!r}")
 
 
+def _is_case_store(target: object) -> bool:
+    return not isinstance(target, (str, Path))
+
+
+def _case_id(target: SectionTarget) -> str:
+    if _is_case_store(target):
+        return target.case_id
+    return _meta(Path(target))["case_id"]
+
+
+def _claim_ids(target: SectionTarget) -> set[str]:
+    if _is_case_store(target):
+        return {c.id for c in target.list_claims()}
+    return {c.id for c in list_claims(Path(target))}
+
+
 def save_section(
-    workspace: Path,
+    target: SectionTarget,
     *,
     template_id: str,
     template_version: int,
@@ -85,7 +107,6 @@ def save_section(
     status: SectionStatus = "draft",
     reviewer: str | None = None,
 ) -> SectionDraft:
-    workspace = Path(workspace)
     template = load_template(template_id)
     if template.version != template_version:
         raise ValueError(
@@ -93,7 +114,7 @@ def save_section(
         )
     review_gate = _template_gate(template, section_id)
 
-    available = {c.id for c in list_claims(workspace)}
+    available = _claim_ids(target)
     missing = [cid for cid in claim_ids if cid not in available]
     if missing:
         raise KeyError(f"claims not in workspace: {missing}")
@@ -103,6 +124,20 @@ def save_section(
     if status == "approved" and review_gate == "licensed_clinician" and not (reviewer or "").strip():
         raise ValueError("licensed_clinician sections require a reviewer to approve")
 
+    if _is_case_store(target):
+        return target.save_section(
+            template_id=template_id,
+            template_version=template_version,
+            section_id=section_id,
+            text=text,
+            claim_ids=list(dict.fromkeys(claim_ids)),
+            status=status,
+            review_gate=review_gate,
+            reviewer=(reviewer or "").strip() or None,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    workspace = Path(target)
     dirpath = _section_dir(workspace, template_id)
     dirpath.mkdir(parents=True, exist_ok=True)
     version = _latest_version(dirpath, section_id) + 1
@@ -124,7 +159,10 @@ def save_section(
     return draft
 
 
-def get_section(workspace: Path, template_id: str, section_id: str) -> SectionDraft | None:
+def get_section(target: SectionTarget, template_id: str, section_id: str) -> SectionDraft | None:
+    if _is_case_store(target):
+        return target.get_section(template_id, section_id)
+    workspace = Path(target)
     dirpath = _section_dir(workspace, template_id)
     version = _latest_version(dirpath, section_id)
     if version == 0:
@@ -133,12 +171,12 @@ def get_section(workspace: Path, template_id: str, section_id: str) -> SectionDr
     return SectionDraft.model_validate_json(raw)
 
 
-def section_states(workspace: Path, template_id: str) -> list[dict]:
+def section_states(target: SectionTarget, template_id: str) -> list[dict]:
     """Ordered state for every section in a template, defaulting to ``empty``."""
     template = load_template(template_id)
     states: list[dict] = []
     for section in template.sections:
-        draft = get_section(workspace, template_id, section.id)
+        draft = get_section(target, template_id, section.id)
         if draft is None:
             states.append(
                 {
@@ -170,7 +208,7 @@ def section_states(workspace: Path, template_id: str) -> list[dict]:
 
 
 def build_section_request_input(
-    workspace: Path,
+    target: SectionTarget,
     *,
     template_id: str,
     template_version: int,
@@ -179,14 +217,13 @@ def build_section_request_input(
     instructions: str,
 ) -> tuple[str, list[SourceRef]]:
     """Build a section's complete unredacted prompt and selected sources."""
-    workspace = Path(workspace)
     template = load_template(template_id)
     if template.version != template_version:
         raise ValueError(
             f"template {template_id} is at version {template.version}, not {template_version}"
         )
     _template_gate(template, section_id)
-    claims = select_claims(workspace, claim_ids)
+    claims = select_claims(target, claim_ids)
     prompt = build_prompt(claims, instructions=instructions)
     source_refs = [
         SourceRef(kind="claim", id=claim.id, version=claim.version)

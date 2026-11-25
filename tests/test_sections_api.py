@@ -1,33 +1,35 @@
-"""Workspace-scoped API: materials, claims, and section persistence."""
+"""Case-scoped API: materials, claims, and section persistence (SQLite store)."""
 
 import importlib
-import json
 
 import pytest
 from fastapi.testclient import TestClient
 
-from psychtool.core.workspace import init_workspace, import_material
-from psychtool.core.claims import add_claim
-from psychtool.server.app import create_app, _workspace_path
+from psychtool.core.workspace import Passage
+from psychtool.server.app import create_app
+from psychtool.store.sqlite_store import SqliteStore
 
 
 def _client(tmp_path, monkeypatch):
-    monkeypatch.setenv("PSYCHTOOL_WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
     return TestClient(create_app())
 
 
-def _workspace(tmp_path):
-    ws = init_workspace(tmp_path / "case-a", case_id="case-a")
-    import_material(
-        ws,
+def _workspace(tmp_path, monkeypatch):
+    """Seed one case with a material and one claim through the store."""
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
+    store = SqliteStore(tmp_path / "psychtool.db")
+    store.create_case("case-a")
+    case = store.case("case-a")
+    case.import_material(
         material_id="doc-1",
         title="Intake",
         provider="self",
         date="2026-10-01",
-        text="first paragraph\n\nsecond paragraph",
+        passages=[Passage(id="p001", text="first paragraph"),
+                  Passage(id="p002", text="second paragraph")],
     )
-    add_claim(
-        ws,
+    case.add_claim(
         claim_id="c1",
         source_document_id="doc-1",
         source_version=1,
@@ -39,32 +41,32 @@ def _workspace(tmp_path):
         topic="history",
         text="statement",
     )
-    return ws
+    return case
 
 
 def test_list_workspaces(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     response = _client(tmp_path, monkeypatch).get("/api/workspaces")
     assert response.status_code == 200
     assert response.json() == [{"case_id": "case-a"}]
 
 
 def test_list_materials(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     response = _client(tmp_path, monkeypatch).get("/api/workspaces/case-a/materials")
     assert response.status_code == 200
     assert [m["id"] for m in response.json()] == ["doc-1"]
 
 
 def test_list_claims(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     response = _client(tmp_path, monkeypatch).get("/api/workspaces/case-a/claims")
     assert response.status_code == 200
     assert [c["id"] for c in response.json()] == ["c1"]
 
 
 def test_section_states_default_empty(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     response = _client(tmp_path, monkeypatch).get(
         "/api/workspaces/case-a/sections", params={"template_id": "intake-report"}
     )
@@ -75,7 +77,7 @@ def test_section_states_default_empty(tmp_path, monkeypatch):
 
 
 def test_put_section_persists(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     client = _client(tmp_path, monkeypatch)
     body = {
         "template_id": "intake-report",
@@ -98,7 +100,7 @@ def test_put_section_persists(tmp_path, monkeypatch):
 
 
 def test_put_section_unknown_claim_is_400(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     client = _client(tmp_path, monkeypatch)
     body = {
         "template_id": "intake-report",
@@ -110,17 +112,16 @@ def test_put_section_unknown_claim_is_400(tmp_path, monkeypatch):
     assert response.status_code == 400
 
 
-def test_case_id_cannot_escape_workspace_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("PSYCHTOOL_WORKSPACES_DIR", str(tmp_path))
-    from fastapi import HTTPException
+def test_case_id_cannot_escape_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
+    store = SqliteStore(tmp_path / "psychtool.db")
 
-    with pytest.raises(HTTPException) as exc:
-        _workspace_path("../escape")
-    assert exc.value.status_code == 400
+    with pytest.raises(ValueError):
+        store.case("../escape")
 
 
 def test_names_endpoint_roundtrip(tmp_path, monkeypatch):
-    _workspace(tmp_path)
+    _workspace(tmp_path, monkeypatch)
     client = _client(tmp_path, monkeypatch)
     assert client.get("/api/workspaces/case-a/names").json() == {"names": []}
     response = client.put(
@@ -131,8 +132,7 @@ def test_names_endpoint_roundtrip(tmp_path, monkeypatch):
 
 
 def test_generate_endpoint_is_gone_without_calling_model(monkeypatch, tmp_path):
-    _workspace(tmp_path)
-    monkeypatch.setenv("PSYCHTOOL_WORKSPACES_DIR", str(tmp_path))
+    _workspace(tmp_path, monkeypatch)
     calls = []
     app_module = importlib.import_module("psychtool.server.app")
     monkeypatch.setattr(

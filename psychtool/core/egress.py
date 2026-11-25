@@ -1,4 +1,12 @@
-"""Model-egress request records, canonical hashing, and local persistence."""
+"""Model-egress request records, canonical hashing, and persistence.
+
+The safety state machine (prepare -> approve -> send, approval-hash check,
+stale-source invalidation) is implemented exactly once here and in
+``psychtool.gateway.client``. Persistence goes through the small
+:class:`~psychtool.core.egress_store.EgressStore` protocol so the JSON
+workspace directory (ADR 0005) and the SQLite case store (ADR 0010) share
+one implementation.
+"""
 
 from __future__ import annotations
 
@@ -13,14 +21,30 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Iterator, Literal, Union
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, field_validator
 
 from psychtool.config import Config, DataTier
+from psychtool.core.egress_store import (
+    EgressStore,
+    JsonDirStore,
+    egress_transition_lock,
+)
 from psychtool.core.redact import IDENTIFIER_KINDS, find_identifiers, redact_text
 from psychtool.core.workspace import get_known_names
+
+# Anything the egress pipeline can persist through: a legacy JSON workspace
+# directory, or any object satisfying the egress store protocol.
+EgressTarget = Union[Path, str, EgressStore]
+
+
+def _as_egress_store(target: EgressTarget) -> EgressStore:
+    """Resolve a persistence target; JSON directories get the file adapter."""
+    if isinstance(target, (str, Path)):
+        return JsonDirStore(Path(target))
+    return target
 
 EgressPurpose = Literal["section_generation", "draft_generation", "judge", "eval"]
 EgressStatus = Literal["prepared", "approved", "sent", "invalidated"]
@@ -238,7 +262,7 @@ def serialize_egress_event(
 
 
 def prepare_egress_request(
-    workspace: Path,
+    workspace: EgressTarget,
     *,
     prompt: str,
     purpose: EgressPurpose,
@@ -246,8 +270,11 @@ def prepare_egress_request(
     source_refs: list[SourceRef],
 ) -> EgressRequest:
     """Redact and persist the complete request that will later be reviewed."""
-    workspace = Path(workspace)
-    known_names = get_known_names(workspace)
+    store = _as_egress_store(workspace)
+    if isinstance(store, JsonDirStore):
+        known_names = get_known_names(store.workspace)
+    else:
+        known_names = store.get_known_names()
     redacted_prompt, token_map = redact_text(prompt, known_names=known_names)
 
     identifier_categories: set[str] = set()
@@ -262,10 +289,10 @@ def prepare_egress_request(
             [finding["category"] for finding in residual_findings]
         )
 
-    meta = json.loads((workspace / "meta.json").read_text(encoding="utf-8"))
+    workspace_id = store.case_id
     request = EgressRequest(
         request_id=secrets.token_urlsafe(18),
-        workspace_id=meta["case_id"],
+        workspace_id=workspace_id,
         purpose=purpose,
         data_tier=config.data_tier,
         provider_base_url=config.base_url,
@@ -280,7 +307,7 @@ def prepare_egress_request(
         prepared_at=datetime.now(timezone.utc).isoformat(),
     )
     request = request.model_copy(update={"content_hash": canonical_hash(request)})
-    save_egress_request(workspace, request)
+    store.save_egress_request(request)
     return request
 
 
@@ -290,10 +317,14 @@ def _egress_dir(workspace: Path) -> Path:
     return directory
 
 
-def save_egress_request(workspace: Path, request: EgressRequest) -> Path:
-    """Atomically persist a request at ``egress/<request_id>.json``."""
+def save_egress_request(workspace: EgressTarget, request: EgressRequest) -> Path | None:
+    """Persist a request; JSON workspaces write atomically, SQLite updates a row."""
+    store = _as_egress_store(workspace)
+    if not isinstance(store, JsonDirStore):
+        store.save_egress_request(request)
+        return None
     request_id = _validate_request_id(request.request_id)
-    directory = _egress_dir(workspace)
+    directory = _egress_dir(store.workspace)
     destination = directory / f"{request_id}.json"
     temporary_path: Path | None = None
     try:
@@ -314,10 +345,13 @@ def save_egress_request(workspace: Path, request: EgressRequest) -> Path:
     return destination
 
 
-def get_egress_request(workspace: Path, request_id: str) -> EgressRequest:
+def get_egress_request(workspace: EgressTarget, request_id: str) -> EgressRequest:
     """Load a persisted request, lazily upgrading an older workspace layout."""
     request_id = _validate_request_id(request_id)
-    path = _egress_dir(workspace) / f"{request_id}.json"
+    store = _as_egress_store(workspace)
+    if not isinstance(store, JsonDirStore):
+        return store.get_egress_request(request_id)
+    path = _egress_dir(store.workspace) / f"{request_id}.json"
     return EgressRequest.model_validate_json(path.read_text(encoding="utf-8"))
 
 
@@ -327,8 +361,21 @@ def _transition_lock_path(workspace: Path, request_id: str) -> Path:
 
 
 @contextmanager
-def _request_transition_lock(workspace: Path, request_id: str) -> Iterator[None]:
+def _request_transition_lock(workspace: EgressTarget, request_id: str) -> Iterator[None]:
     """Serialize one request's transitions and leave crash-created locks closed."""
+    store = _as_egress_store(workspace)
+    if isinstance(store, JsonDirStore):
+        # Legacy JSON path keeps its own lock-file implementation so existing
+        # on-disk workspaces and their tests behave exactly as before.
+        with _json_request_transition_lock(store.workspace, request_id):
+            yield
+        return
+    with egress_transition_lock(store, request_id):
+        yield
+
+
+@contextmanager
+def _json_request_transition_lock(workspace: Path, request_id: str) -> Iterator[None]:
     lock_path = _transition_lock_path(workspace, request_id)
     with _TRANSITION_MUTEXES_GUARD:
         mutex = _TRANSITION_MUTEXES.setdefault(lock_path.resolve(), threading.Lock())
@@ -371,24 +418,25 @@ def _request_transition_lock(workspace: Path, request_id: str) -> Iterator[None]
             mutex.release()
 
 
-def _invalidate_request_locked(workspace: Path, request_id: str) -> EgressRequest:
-    request = get_egress_request(workspace, request_id)
+def _invalidate_request_locked(workspace: EgressTarget, request_id: str) -> EgressRequest:
+    store = _as_egress_store(workspace)
+    request = get_egress_request(store, request_id)
     if request.status == "invalidated":
         return request
     if request.status == "sent":
         raise EgressStateError("sent egress requests cannot be invalidated")
     invalidated = request.model_copy(update={"status": "invalidated"})
-    save_egress_request(workspace, invalidated)
+    store.save_egress_request(invalidated)
     return invalidated
 
 
-def invalidate_request(workspace: Path, request_id: str) -> EgressRequest:
+def invalidate_request(workspace: EgressTarget, request_id: str) -> EgressRequest:
     """Reload and atomically mark an unsent request as invalidated."""
     with _request_transition_lock(workspace, request_id):
         return _invalidate_request_locked(workspace, request_id)
 
 
-def _prepared_request(workspace: Path, request_id: str) -> EgressRequest:
+def _prepared_request(workspace: EgressTarget, request_id: str) -> EgressRequest:
     request = get_egress_request(workspace, request_id)
     if request.status != "prepared":
         raise EgressStateError("egress request is not prepared")
@@ -396,7 +444,7 @@ def _prepared_request(workspace: Path, request_id: str) -> EgressRequest:
 
 
 def approve_human(
-    workspace: Path,
+    workspace: EgressTarget,
     request_id: str,
     *,
     reviewer: str,
@@ -424,12 +472,12 @@ def approve_human(
                 "approved_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        save_egress_request(workspace, approved)
+        _as_egress_store(workspace).save_egress_request(approved)
         return approved
 
 
 def approve_synthetic(
-    workspace: Path,
+    workspace: EgressTarget,
     request_id: str,
     *,
     reason: str,
@@ -459,5 +507,5 @@ def approve_synthetic(
                 "approved_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        save_egress_request(workspace, approved)
+        _as_egress_store(workspace).save_egress_request(approved)
         return approved

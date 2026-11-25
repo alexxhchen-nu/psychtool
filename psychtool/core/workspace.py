@@ -54,6 +54,11 @@ def _split_passages(text: str) -> list[Passage]:
     return [Passage(id=f"p{i:03d}", text=b) for i, b in enumerate(blocks, start=1)]
 
 
+def split_passages(text: str) -> list[Passage]:
+    """Public alias: split raw text into versioned passage blocks."""
+    return _split_passages(text)
+
+
 def init_workspace(workspace: Path, *, case_id: str) -> Path:
     workspace = Path(workspace)
     if workspace.exists():

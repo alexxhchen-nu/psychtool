@@ -25,8 +25,15 @@ ENV_JUDGE_MODEL = "PSYCHTOOL_JUDGE_MODEL"
 ENV_DATA_TIER = "PSYCHTOOL_DATA_TIER"
 ENV_API_KEY = "PSYCHTOOL_API_KEY"
 ENV_REDACT = "PSYCHTOOL_REDACT"
+ENV_TRANSPORT = "PSYCHTOOL_TRANSPORT"
 
 DEFAULT_DATA_TIER: DataTier = "synthetic"
+
+# The model transport is selected explicitly and defaults to the offline fake.
+# ``http`` is the only mode that can open a socket and must be opted into via
+# ``PSYCHTOOL_TRANSPORT=http`` (or ``transport`` in a config file).
+TransportMode = Literal["fake", "http"]
+DEFAULT_TRANSPORT: TransportMode = "fake"
 
 
 class Config(BaseModel):
@@ -38,6 +45,7 @@ class Config(BaseModel):
     data_tier: DataTier = DEFAULT_DATA_TIER
     api_key: str | None = None
     redact: bool = False
+    transport: TransportMode = DEFAULT_TRANSPORT
 
 
 def _as_bool(value: str) -> bool:
@@ -70,6 +78,11 @@ def load_config(path: Path | str | None = None) -> Config:
     api_key = os.environ.get(ENV_API_KEY)
     redact_raw = os.environ.get(ENV_REDACT)
     redact = _as_bool(redact_raw) if redact_raw is not None else bool(file_cfg.get("redact", False))
+    transport = os.environ.get(ENV_TRANSPORT, file_cfg.get("transport", DEFAULT_TRANSPORT))
+    # Fail closed: an unrecognised transport value must never enable the
+    # network-capable transport, so anything but "http" falls back to "fake".
+    if transport != "http":
+        transport = DEFAULT_TRANSPORT
 
     return Config(
         base_url=base_url,
@@ -78,4 +91,5 @@ def load_config(path: Path | str | None = None) -> Config:
         data_tier=data_tier,  # type: ignore[arg-type]
         api_key=api_key,
         redact=redact,
+        transport=transport,  # type: ignore[arg-type]
     )

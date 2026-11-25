@@ -1,9 +1,14 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
-import { apiRequest, jsonRequest, workspaceUrl } from './api'
+import type { FormEvent } from 'react'
+import { apiRequest, createCase, jsonRequest, workspaceUrl } from './api'
 import type { Claim, ClaimSuggestion, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
+import { validateCaseId } from './case-form'
 import MaterialUploadPanel from './components/MaterialUploadPanel'
+import PasteMaterialPanel from './components/PasteMaterialPanel'
 import EgressReviewPanel from './components/EgressReviewPanel'
 import './App.css'
+
+export const PRIVACY_BANNER = 'Please note: This prototype is not HIPAA compliant yet. Do not enter real patient information. Use only synthetic or separately approved practice materials.'
 
 const STATUS_LABELS: Record<SectionStatus, string> = { empty: 'Empty', draft: 'Draft', needs_review: 'Needs review', approved: 'Approved' }
 const STATUS_ORDER: SectionStatus[] = ['empty', 'draft', 'needs_review', 'approved']
@@ -38,7 +43,13 @@ function App() {
     return () => { active = false }
   }, [])
   const template = templates.find((item) => item.template_id === templateId)
+  const caseCreated = useCallback((created: Workspace) => {
+    setWorkspaces((items) => [...items.filter((item) => item.case_id !== created.case_id), created]
+      .sort((a, b) => a.case_id.localeCompare(b.case_id)))
+    setWorkspaceId(created.case_id)
+  }, [])
   return <div className="app-shell">
+    <div className="privacy-banner" role="note">{PRIVACY_BANNER}</div>
     <header className="topbar">
       <div className="brand-lockup"><span className="brand-mark">P</span><div><h1>psychtool</h1><p className="brand-description">Source-traceable writing</p></div></div>
       <div className="topbar-controls">
@@ -62,10 +73,41 @@ function App() {
       </section>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {loading && <p role="status">Loading workspace…</p>}
+      {!loading && !error && <CreateCasePanel onCreated={caseCreated} />}
       {workspaceId && template && <Workbench key={`${workspaceId}/${template.template_id}/${template.version}`} workspaceId={workspaceId} template={template} onBusyChange={setBusy} />}
-      {!loading && !error && !workspaceId && <section className="empty-workspace"><h3>Create a case to begin.</h3><p>Run <code>psychtool init &lt;path&gt; --case-id &lt;id&gt;</code> and point the server at it via <code>PSYCHTOOL_WORKSPACES_DIR</code>.</p></section>}
+      {!loading && !error && !workspaceId && <section className="empty-workspace"><h3>Create a case to begin.</h3><p>Use the form above, or run <code>psychtool init &lt;path&gt; --case-id &lt;id&gt;</code> and point the server at it via <code>PSYCHTOOL_WORKSPACES_DIR</code>.</p></section>}
     </main>
   </div>
+}
+
+function CreateCasePanel({ onCreated }: { onCreated: (workspace: Workspace) => void }) {
+  const [caseId, setCaseId] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const invalid = validateCaseId(caseId)
+    if (invalid) { setError(invalid); return }
+    setBusy(true); setError('')
+    try {
+      const created = await createCase(caseId)
+      setCaseId('')
+      onCreated(created)
+    } catch {
+      setError('Could not create the case. The ID may already exist or be invalid.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <section className="create-case" aria-label="Create a case">
+    <form onSubmit={submit} noValidate>
+      <label className="field-label" htmlFor="new-case-id">New case ID
+        <input id="new-case-id" className="text-input" value={caseId} maxLength={64} autoCapitalize="off" autoComplete="off" spellCheck={false} disabled={busy} onChange={(event) => setCaseId(event.target.value)} placeholder="e.g. demo-case-1" />
+      </label>
+      <button className="secondary-button" type="submit" disabled={busy || !caseId}>Create case</button>
+    </form>
+    {error && <p className="error-banner" role="alert">{error}</p>}
+  </section>
 }
 
 interface WorkbenchProps { workspaceId: string; template: ReportTemplate; onBusyChange: (busy: boolean) => void }
@@ -82,6 +124,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
   const [suggestions, setSuggestions] = useState<ClaimSuggestion[]>([])
   const [suggestionsLoaded, setSuggestionsLoaded] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
+  const [showPaste, setShowPaste] = useState(false)
   const [showIntake, setShowIntake] = useState(false)
   const [showNames, setShowNames] = useState(false)
   const [error, setError] = useState('')
@@ -123,7 +166,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
     await refreshSources()
   }
   function reviewMaterial(id: string) {
-    setMaterialId(id); setSuggestions([]); setSuggestionsLoaded(false); setShowIntake(true); setShowUpload(false)
+    setMaterialId(id); setSuggestions([]); setSuggestionsLoaded(false); setShowIntake(true); setShowUpload(false); setShowPaste(false)
   }
   async function runMutation(action: () => Promise<void>, failure: string) {
     if (mutation.current) return
@@ -164,7 +207,8 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
     <section className="case-strip">
       <div className="case-meta"><span className="case-id">{workspaceId}</span><span>{materials.length} materials</span><span>{claims.length} claims</span><span>{approved}/{template.sections.length} sections approved</span></div>
       <div className="case-actions">
-        <button className="ghost-button" disabled={busy || !ready} aria-expanded={showUpload} onClick={() => setShowUpload(!showUpload)}>Upload material</button>
+        <button className="ghost-button" disabled={busy || !ready} aria-expanded={showUpload} onClick={() => { setShowUpload(!showUpload); setShowPaste(false) }}>Upload material</button>
+        <button className="ghost-button" disabled={busy || !ready} aria-expanded={showPaste} onClick={() => { setShowPaste(!showPaste); setShowUpload(false) }}>Paste synthetic text</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showIntake} onClick={() => setShowIntake(!showIntake)}>Review intake claims</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showNames} onClick={() => setShowNames(!showNames)}>Identifying info</button>
       </div>
@@ -172,6 +216,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
     {error && <div className="error-banner" role="alert">{error}</div>}
     {!ready && !error && <p role="status">Loading case…</p>}
     {ready && <div hidden={!showUpload}><fieldset className="upload-lock" disabled={busy}><MaterialUploadPanel workspaceId={workspaceId} onUploaded={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset></div>}
+    {ready && showPaste && <fieldset className="upload-lock" disabled={busy}><PasteMaterialPanel workspaceId={workspaceId} onPasted={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset>}
     {showIntake && <section className="names-panel intake-panel" aria-label="Intake claim review">
       <div className="names-panel-copy"><h3>Review each source passage.</h3><p>Assign topic, category and attribution before accepting. These are passage candidates, not diagnostic conclusions.</p></div>
       <div>

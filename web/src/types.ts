@@ -93,3 +93,11 @@ export interface PrepareInput {
 }
 export type ApprovalInput = { content_hash: string; reviewer: string } | { content_hash: string; synthetic_auto_reason: string }
 export interface SendResult { request_id: string; status: 'sent'; text: string }
+export interface PasteMaterialInput {
+  material_id: string
+  title: string
+  provider: string
+  date: string
+  text: string
+  synthetic_confirmed: boolean
+}
