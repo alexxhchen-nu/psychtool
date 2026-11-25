@@ -5,6 +5,7 @@ import type { Claim, ClaimSuggestion, Material, ReportTemplate, SectionState, Se
 import { validateCaseId } from './case-form'
 import MaterialUploadPanel from './components/MaterialUploadPanel'
 import PasteMaterialPanel from './components/PasteMaterialPanel'
+import DimensionsPanel from './components/DimensionsPanel'
 import EgressReviewPanel from './components/EgressReviewPanel'
 import EvidencePanel from './components/EvidencePanel'
 import './App.css'
@@ -129,6 +130,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
   const [showIntake, setShowIntake] = useState(false)
   const [showNames, setShowNames] = useState(false)
   const [showEvidence, setShowEvidence] = useState(false)
+  const [showDimensions, setShowDimensions] = useState(false)
   const [error, setError] = useState('')
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -216,6 +218,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showPaste} onClick={() => { setShowPaste(!showPaste); setShowUpload(false) }}>Paste synthetic text</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showIntake} onClick={() => setShowIntake(!showIntake)}>Review intake claims</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showEvidence} onClick={() => setShowEvidence(!showEvidence)}>Evidence</button>
+        <button className="ghost-button" disabled={busy || !ready} aria-expanded={showDimensions} onClick={() => setShowDimensions(!showDimensions)}>Dimensions</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showNames} onClick={() => setShowNames(!showNames)}>Identifying info</button>
       </div>
     </section>
@@ -252,6 +255,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
       <button className="primary-button" disabled={busy} onClick={saveNames}>Save names</button>
     </section>}
     {ready && showEvidence && <EvidencePanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} />}
+    {ready && showDimensions && <DimensionsPanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} syntheticConfirmed={syntheticConfirmed} />}
     {ready && selected && selectedState && <div className="report-grid">
       <aside className="section-rail" aria-label="Report sections"><div className="rail-heading"><span>Document map</span><strong>{template.sections.length} sections</strong></div>
         <ol>{template.sections.map((section, index) => {

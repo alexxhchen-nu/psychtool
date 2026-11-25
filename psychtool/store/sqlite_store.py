@@ -41,6 +41,15 @@ from psychtool.core.categorize import (
     suggest_role,
 )
 from psychtool.core.claims import Claim
+from psychtool.core.dimensions import (
+    DIM_RULES_VERSION,
+    STALE_CHOICE_REASON,
+    Dimension,
+    apply_hard_rules,
+    is_safe_dimension_name,
+    match_dimensions,
+    parse_dimension_line,
+)
 from psychtool.core.extract import Extractor, extract_evidence
 from psychtool.core.sections import SectionDraft
 from psychtool.core.workspace import Material, Passage
@@ -53,7 +62,7 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Mirrors the material-id rule used by the ingest path.
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 # R5 (ADR 0015): when SHE chose the category/role, the effective reason is a
 # fixed sentence about her choice — never the rule's keyword sentence, which
@@ -86,6 +95,7 @@ _SCHEMA_STATEMENTS = (
         title      TEXT NOT NULL,
         provider   TEXT NOT NULL,
         date       TEXT NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'case' CHECK (kind IN ('case', 'dims')),
         PRIMARY KEY (case_id, material_id, version)
     )
     """,
@@ -171,6 +181,9 @@ _SCHEMA_STATEMENTS = (
     # Audit log (ADR 0011): append-only, hash-chained, structurally unable to
     # hold free text. The triggers below block UPDATE/DELETE on the app path.
     # item_count (schema v4, ADR 0013) is an integer-only optional count.
+    # value (schema v6, ADR 0016) is an allowlisted action value only — for
+    # her category/role/dimension changes it records the VALUE she picked,
+    # never her text.
     """
     CREATE TABLE IF NOT EXISTS audit_log (
         seq          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,7 +196,8 @@ _SCHEMA_STATEMENTS = (
         destination  TEXT,
         prev_hash    TEXT NOT NULL,
         entry_hash   TEXT NOT NULL,
-        item_count   INTEGER CHECK (item_count IS NULL OR item_count >= 0)
+        item_count   INTEGER CHECK (item_count IS NULL OR item_count >= 0),
+        value        TEXT
     )
     """,
     # Persisted evidence (PT-07 / ADR 0015, schema v5). The id is location-
@@ -213,16 +227,44 @@ _SCHEMA_STATEMENTS = (
         role_reason        TEXT NOT NULL,
         category           TEXT
             CHECK (category IS NULL OR category IN ('family_history', 'medical_history',
-                                                    'test_results', 'behavioral_observations',
-                                                    'development_school', 'daily_living',
-                                                    'other', 'uncategorized')),
+                                                  'test_results', 'behavioral_observations',
+                                                  'development_school', 'daily_living',
+                                                  'other', 'uncategorized')),
         role               TEXT
             CHECK (role IS NULL OR role IN ('school', 'caregiver', 'medical_record',
                                             'clinician', 'client', 'to_confirm')),
+        suggested_dimension_id TEXT,
+        dim_state_suggested    TEXT
+            CHECK (dim_state_suggested IN ('needs_review', 'none')),
+        dim_reason             TEXT,
+        dimension_choice       TEXT
+            CHECK (dimension_choice IN ('confirmed', 'changed', 'rejected')),
+        dimension_id           TEXT,
         status             TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
         rules_version      TEXT NOT NULL,
+        dim_rules_version  TEXT,
         PRIMARY KEY (case_id, evidence_id),
         FOREIGN KEY (case_id, material_id, material_version, passage_id)
+            REFERENCES passages(case_id, material_id, version, passage_id)
+    )
+    """,
+    # HER uploaded dimension list (PT-08 / ADR 0016, schema v6). Names come
+    # ONLY from the latest version of the case's single dims material; each
+    # name is a verbatim substring of its passage (its span is stored and
+    # re-verified with the spans helpers). The id is stable across list
+    # versions that keep the same name, so her choices survive a re-upload.
+    """
+    CREATE TABLE IF NOT EXISTS dimensions (
+        case_id          TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+        dimension_id     TEXT NOT NULL,
+        list_material_id TEXT NOT NULL,
+        list_version     INTEGER NOT NULL,
+        passage_id       TEXT NOT NULL,
+        start            INTEGER NOT NULL CHECK (start >= 0),
+        end              INTEGER NOT NULL CHECK (end > start),
+        name             TEXT NOT NULL,
+        PRIMARY KEY (case_id, dimension_id),
+        FOREIGN KEY (case_id, list_material_id, list_version, passage_id)
             REFERENCES passages(case_id, material_id, version, passage_id)
     )
     """,
@@ -359,23 +401,82 @@ _MIGRATION_STATEMENTS = {
                 CHECK (suggested_role IN ('school', 'caregiver', 'medical_record',
                                           'clinician', 'client', 'to_confirm')),
             role_reason        TEXT NOT NULL,
-            category           TEXT
-                CHECK (category IS NULL OR category IN ('family_history', 'medical_history',
-                                                        'test_results', 'behavioral_observations',
-                                                        'development_school', 'daily_living',
-                                                        'other', 'uncategorized')),
-            role               TEXT
-                CHECK (role IS NULL OR role IN ('school', 'caregiver', 'medical_record',
-                                                'clinician', 'client', 'to_confirm')),
-            status             TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
-            rules_version      TEXT NOT NULL,
-            PRIMARY KEY (case_id, evidence_id),
-            FOREIGN KEY (case_id, material_id, material_version, passage_id)
+        category           TEXT
+            CHECK (category IS NULL OR category IN ('family_history', 'medical_history',
+                                                  'test_results', 'behavioral_observations',
+                                                  'development_school', 'daily_living',
+                                                  'other', 'uncategorized')),
+        role               TEXT
+            CHECK (role IS NULL OR role IN ('school', 'caregiver', 'medical_record',
+                                            'clinician', 'client', 'to_confirm')),
+        status             TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+        rules_version      TEXT NOT NULL,
+        PRIMARY KEY (case_id, evidence_id),
+        FOREIGN KEY (case_id, material_id, material_version, passage_id)
+            REFERENCES passages(case_id, material_id, version, passage_id)
+    )
+    """,
+    ),
+    # Schema v5 -> v6 (PT-08 / ADR 0016): dimension mapping. Purely additive:
+    # materials gain a kind column (default 'case'), the audit log gains an
+    # allowlisted value column, evidence gains suggestion/choice columns, and
+    # the new dimensions table holds her uploaded list. Existing rows keep
+    # NULL in every new column.
+    6: (
+        "ALTER TABLE materials ADD COLUMN kind TEXT NOT NULL DEFAULT 'case'"
+        " CHECK (kind IN ('case', 'dims'))",
+        "ALTER TABLE audit_log ADD COLUMN value TEXT",
+        "ALTER TABLE evidence ADD COLUMN suggested_dimension_id TEXT",
+        "ALTER TABLE evidence ADD COLUMN dim_state_suggested TEXT"
+        " CHECK (dim_state_suggested IN ('needs_review', 'none'))",
+        "ALTER TABLE evidence ADD COLUMN dim_reason TEXT",
+        "ALTER TABLE evidence ADD COLUMN dimension_choice TEXT"
+        " CHECK (dimension_choice IN ('confirmed', 'changed', 'rejected'))",
+        "ALTER TABLE evidence ADD COLUMN dimension_id TEXT",
+        "ALTER TABLE evidence ADD COLUMN dim_rules_version TEXT",
+        """
+        CREATE TABLE IF NOT EXISTS dimensions (
+            case_id          TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+            dimension_id     TEXT NOT NULL,
+            list_material_id TEXT NOT NULL,
+            list_version     INTEGER NOT NULL,
+            passage_id       TEXT NOT NULL,
+            start            INTEGER NOT NULL CHECK (start >= 0),
+            end              INTEGER NOT NULL CHECK (end > start),
+            name             TEXT NOT NULL,
+            PRIMARY KEY (case_id, dimension_id),
+            FOREIGN KEY (case_id, list_material_id, list_version, passage_id)
                 REFERENCES passages(case_id, material_id, version, passage_id)
         )
         """,
     ),
 }
+
+
+def _execute_migration_statement(
+    connection: sqlite3.Connection, statement: str
+) -> None:
+    """Run one migration statement.
+
+    ``ALTER TABLE ... ADD COLUMN`` is skipped when the column already exists:
+    some downgrade-fixtures rebuild an older ``user_version`` database from
+    the current code, so additive columns may already be present. Skipping
+    is safe because the existing column came from the same CREATE/ALTER
+    definition (identity of name + definition is checked below).
+    """
+    stripped = statement.strip()
+    if stripped.upper().startswith("ALTER TABLE") and " ADD COLUMN " in stripped.upper():
+        match = re.match(
+            r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)", stripped, re.IGNORECASE
+        )
+        if match:
+            table, column = match.group(1), match.group(2)
+            columns = {
+                row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            if column in columns:
+                return
+    connection.execute(statement)
 
 
 class CaseExistsError(RuntimeError):
@@ -384,6 +485,10 @@ class CaseExistsError(RuntimeError):
 
 class UnknownCaseError(KeyError):
     """Raised when binding to a case id that does not exist."""
+
+
+class DimensionListExistsError(RuntimeError):
+    """Raised when a second dims material_id is imported (ADR 0016)."""
 
 
 def default_db_path() -> Path:
@@ -454,7 +559,7 @@ class SqliteStore:
                     # procedure). foreign_key_check verifies nothing broke.
                     transaction.execute("PRAGMA defer_foreign_keys=ON")
                     for statement in _MIGRATION_STATEMENTS[step]:
-                        transaction.execute(statement)
+                        _execute_migration_statement(transaction, statement)
                     broken = transaction.execute("PRAGMA foreign_key_check").fetchall()
                     if broken:
                         raise RuntimeError(
@@ -533,6 +638,7 @@ class SqliteStore:
         content_hash: str | None = None,
         destination: str | None = None,
         item_count: int | None = None,
+        value: str | None = None,
     ) -> None:
         """Append one chained audit row (joins an open transaction)."""
         _audit.append_audit(
@@ -544,6 +650,7 @@ class SqliteStore:
             content_hash=content_hash,
             destination=destination,
             item_count=item_count,
+            value=value,
         )
 
     def verify_audit_chain(self) -> tuple[bool, int, int | None]:
@@ -817,6 +924,7 @@ class CaseStore:
         content_hash: str | None = None,
         destination: str | None = None,
         item_count: int | None = None,
+        value: str | None = None,
     ) -> None:
         """Append one audit row through the underlying store connection."""
         self._store.append_audit(
@@ -827,6 +935,7 @@ class CaseStore:
             content_hash=content_hash,
             destination=destination,
             item_count=item_count,
+            value=value,
         )
 
     # -- materials ------------------------------------------------------
@@ -835,7 +944,7 @@ class CaseStore:
         """Latest version of every material in this case, id-sorted."""
         rows = self._db.execute(
             """
-            SELECT m.material_id, m.version, m.title, m.provider, m.date
+            SELECT m.material_id, m.version, m.title, m.provider, m.date, m.kind
             FROM materials m
             JOIN (
                 SELECT material_id, MAX(version) AS max_version
@@ -865,6 +974,7 @@ class CaseStore:
                     title=row["title"],
                     provider=row["provider"],
                     date=row["date"],
+                    kind=row["kind"],
                     passages=[
                         Passage(id=p["passage_id"], text=p["text"]) for p in passages
                     ],
@@ -887,7 +997,7 @@ class CaseStore:
                 raise KeyError(f"unknown material: {material_id}")
         row = self._db.execute(
             """
-            SELECT title, provider, date FROM materials
+            SELECT title, provider, date, kind FROM materials
             WHERE case_id = ? AND material_id = ? AND version = ?
             """,
             (self._case_id, material_id, version),
@@ -909,6 +1019,7 @@ class CaseStore:
             title=row["title"],
             provider=row["provider"],
             date=row["date"],
+            kind=row["kind"],
             passages=[Passage(id=p["passage_id"], text=p["text"]) for p in passages],
         )
 
@@ -929,6 +1040,7 @@ class CaseStore:
         passages: list[Passage],
         blocked_count: int = 0,
         blocked_hash: str | None = None,
+        kind: str = "case",
     ) -> Material:
         """Append the next immutable version of a material (one transaction).
 
@@ -936,7 +1048,13 @@ class CaseStore:
         call, ``blocked_count``/``blocked_hash`` describe them and a
         ``material.protected_blocked`` row is written in the *same*
         transaction as the material import (ADR 0011 rule).
+
+        ``kind`` is ``'case'`` for clinical source materials and ``'dims'``
+        for her uploaded dimension list (ADR 0016). Dims materials are never
+        used for evidence extraction.
         """
+        if kind not in ("case", "dims"):
+            raise ValueError("material kind must be 'case' or 'dims'")
         if not MATERIAL_ID_RE.fullmatch(material_id):
             raise ValueError("material id must be a short anonymous slug")
         material = Material(
@@ -949,6 +1067,16 @@ class CaseStore:
             passages=passages,
         )
         with self._store.transaction() as connection:
+            if kind == "dims":
+                existing = connection.execute(
+                    "SELECT material_id FROM materials"
+                    " WHERE case_id = ? AND kind = 'dims' LIMIT 1",
+                    (self._case_id,),
+                ).fetchone()
+                if existing is not None and existing["material_id"] != material_id:
+                    raise DimensionListExistsError(
+                        "dimension list exists"
+                    )
             row = connection.execute(
                 "SELECT MAX(version) AS v FROM materials WHERE case_id = ? AND material_id = ?",
                 (self._case_id, material_id),
@@ -956,9 +1084,9 @@ class CaseStore:
             version = (row["v"] or 0) + 1
             material = material.model_copy(update={"version": version})
             connection.execute(
-                "INSERT INTO materials (case_id, material_id, version, title, provider, date)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (self._case_id, material_id, version, title, provider, date),
+                "INSERT INTO materials (case_id, material_id, version, title, provider, date, kind)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (self._case_id, material_id, version, title, provider, date, kind),
             )
             for position, passage in enumerate(passages, start=1):
                 connection.execute(
@@ -996,6 +1124,11 @@ class CaseStore:
                     content_hash=blocked_hash,
                     item_count=blocked_count,
                 )
+            if kind == "dims":
+                # The latest list version is the dimension table: parse it in
+                # the same transaction so the import and the table it defines
+                # commit or roll back together (ADR 0016).
+                self.build_dimensions()
         return material
 
     # -- known names ------------------------------------------------------
@@ -1171,20 +1304,30 @@ class CaseStore:
         extractor: Extractor,
         rules: CategorizeRules | None = None,
         material_ids: set[str] | None = None,
+        matcher: object | None = None,
     ) -> dict[str, int]:
         """Recompute persisted evidence for the latest material versions.
 
         One transaction, idempotent: rows are upserted by their stable id —
         existing rows get new suggestions/reasons/rules_version but her
-        ``category``/``role`` choices are NEVER overwritten; rows the current
-        rules no longer produce become ``superseded`` (never deleted). One
-        ``evidence.extract`` audit row is written per material whose rows
-        changed (item_count = its active items). Returns per-material active
-        counts plus the number of candidates dropped by the span check.
+        ``category``/``role``/``dimension`` choices are NEVER overwritten;
+        rows the current rules no longer produce become ``superseded`` (never
+        deleted). One ``evidence.extract`` audit row is written per material
+        whose rows changed (item_count = its active items). Returns
+        per-material active counts plus the number of candidates dropped by
+        the span check.
 
         ``material_ids`` restricts the refresh to those materials (upload /
         paste refresh only the imported material); ``None`` refreshes every
-        material of the case.
+        case material. Dims materials (ADR 0016) are NEVER evidence sources:
+        they are skipped here, but uploading a new list version still
+        recomputes every evidence row's dimension suggestion in the same
+        transaction.
+
+        ``matcher`` is the pluggable dimension matcher (tests substitute
+        fakes); the default is the dim-1 prototype port. Suggestions pass
+        through the four hard rules (:func:`apply_hard_rules`), so a hostile
+        or broken matcher cannot name anything outside her uploaded list.
         """
         rules = rules or default_rules()
         materials = [
@@ -1192,8 +1335,20 @@ class CaseStore:
             for material in self.list_materials()
             if material_ids is None or material.id in material_ids
         ]
-        result = extract_evidence(extractor, materials)
-        by_material: dict[str, list] = {material.id: [] for material in materials}
+        # ADR 0016: dims materials are the dimension list, never evidence
+        # sources — extraction skips them entirely. Uploading/pasting a new
+        # list version still remaps every evidence row's dimension suggestion
+        # in the same transaction (see _remap_dimensions below).
+        evidence_materials = [m for m in materials if m.kind == "case"]
+        # Refreshing a dims material (a new list version) remaps the
+        # dimension suggestions of every evidence row in the same
+        # transaction — extraction itself skips dims materials entirely.
+        if not evidence_materials and any(m.kind == "dims" for m in materials):
+            with self._store.transaction() as connection:
+                self._remap_dimensions(connection, matcher)
+            return {"materials": {}, "dropped": 0}
+        result = extract_evidence(extractor, evidence_materials)
+        by_material: dict[str, list] = {material.id: [] for material in evidence_materials}
         for item in result.items:
             by_material.setdefault(item.span.material_id, []).append(item)
         counts: dict[str, int] = {}
@@ -1206,7 +1361,8 @@ class CaseStore:
                     for row in connection.execute(
                         "SELECT evidence_id, category, role, suggested_category,"
                         "       category_reason, suggested_role, role_reason,"
-                        "       rules_version, status"
+                        "       rules_version, status, suggested_dimension_id,"
+                        "       dim_state_suggested, dim_reason, dim_rules_version"
                         " FROM evidence WHERE case_id = ? AND material_id = ?",
                         (self._case_id, material_id),
                     ).fetchall()
@@ -1214,6 +1370,8 @@ class CaseStore:
                 active = 0
                 changed = False
                 produced_ids: set[str] = set()
+                # HER uploaded dimension list (may be None — rule 3).
+                dimensions = self._load_dimensions(connection)
                 for item in by_material[material_id]:
                     span = item.span
                     evidence_id = self._evidence_id(
@@ -1229,6 +1387,9 @@ class CaseStore:
                         item.quote, rules
                     )
                     suggested_role, _, role_reason = suggest_role(item.quote, rules)
+                    dim_id, dim_state, dim_reason = self._dimension_suggestion(
+                        connection, item.quote, dimensions, matcher
+                    )
                     existing = existing_rows.get(evidence_id)
                     if existing is None:
                         connection.execute(
@@ -1236,9 +1397,11 @@ class CaseStore:
                             " (case_id, evidence_id, material_id, material_version,"
                             "  passage_id, start, end, quote, suggested_category,"
                             "  category_reason, suggested_role, role_reason, category,"
-                            "  role, status, rules_version)"
+                            "  role, status, rules_version,"
+                            "  suggested_dimension_id, dim_state_suggested, dim_reason,"
+                            "  dim_rules_version)"
                             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,"
-                            "         'active', ?)",
+                            "         'active', ?, ?, ?, ?, ?)",
                             (
                                 self._case_id,
                                 evidence_id,
@@ -1253,6 +1416,10 @@ class CaseStore:
                                 suggested_role,
                                 role_reason,
                                 rules.version,
+                                dim_id,
+                                dim_state,
+                                dim_reason,
+                                DIM_RULES_VERSION,
                             ),
                         )
                         changed = True
@@ -1268,6 +1435,14 @@ class CaseStore:
                             updates["role_reason"] = role_reason
                         if existing["rules_version"] != rules.version:
                             updates["rules_version"] = rules.version
+                        if existing["suggested_dimension_id"] != dim_id:
+                            updates["suggested_dimension_id"] = dim_id
+                        if existing["dim_state_suggested"] != dim_state:
+                            updates["dim_state_suggested"] = dim_state
+                        if existing["dim_reason"] != dim_reason:
+                            updates["dim_reason"] = dim_reason
+                        if existing["dim_rules_version"] != DIM_RULES_VERSION:
+                            updates["dim_rules_version"] = DIM_RULES_VERSION
                         if existing["status"] != "active":
                             updates["status"] = "active"
                         if updates:
@@ -1301,7 +1476,299 @@ class CaseStore:
                         object_id=material_id,
                         item_count=active,
                     )
+            # Dimension suggestions always reflect the latest list and the
+            # latest quotes in the same transaction (ADR 0016).
+            self._remap_dimensions(connection, matcher)
         return {"materials": counts, "dropped": result.dropped}
+
+    # -- dimensions (PT-08 / ADR 0016) ---------------------------------------
+
+    @staticmethod
+    def _dimension_id(case_id: str, list_material_id: str, name: str) -> str:
+        """Stable id derived from the list source + casefolded name.
+
+        Survives a new list version that keeps the same name, so her choices
+        persist across re-uploads of the list (the name is her text; only a
+        digest of it ever feeds the id).
+        """
+        payload = "\x1f".join((case_id, list_material_id, name.casefold()))
+        return "dim_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+    def _load_dimensions(self, connection: sqlite3.Connection) -> list[Dimension] | None:
+        """The current dimension list (built from the latest dims version).
+
+        Returns None when the case has no uploaded list (rule 3). The rows
+        are the latest parse of the latest dims material version.
+        """
+        row = connection.execute(
+            """
+            SELECT material_id, MAX(version) AS v FROM materials
+            WHERE case_id = ? AND kind = 'dims' GROUP BY material_id
+            ORDER BY material_id LIMIT 1
+            """,
+            (self._case_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        rows = connection.execute(
+            "SELECT dimension_id, name FROM dimensions"
+            " WHERE case_id = ? AND list_material_id = ? AND list_version = ?"
+            " ORDER BY rowid",
+            (self._case_id, row["material_id"], row["v"]),
+        ).fetchall()
+        return [Dimension(id=r["dimension_id"], name=r["name"]) for r in rows]
+
+    def _dimension_suggestion(
+        self,
+        connection: sqlite3.Connection,
+        quote: str,
+        dimensions: list[Dimension] | None,
+        matcher: object | None,
+    ) -> tuple[str | None, str, str]:
+        """Suggest (dimension_id, state, reason) for one quote.
+
+        The matcher runs first, then the four hard rules discard anything the
+        matcher should not have said (ADR 0016 §4). A stale clinician choice
+        (her dimension left the latest list) is handled at read time, not
+        here: the stored suggestion columns never carry her choice.
+        """
+        suggestion = match_dimensions(quote, dimensions, matcher=matcher)
+        if dimensions:
+            known_ids = {d.id for d in dimensions}
+            known_names = {d.id: d.name for d in dimensions}
+        else:
+            known_ids, known_names = set(), {}
+        cleaned = apply_hard_rules(quote, suggestion, known_ids, known_names)
+        return cleaned.dimension_id, cleaned.state, cleaned.reason
+
+    def _remap_dimensions(self, connection: sqlite3.Connection, matcher: object | None) -> None:
+        """Recompute dimension suggestions for every row of the case.
+
+        Runs in the caller's transaction after a new list version lands, so
+        HER choices (``dimension_choice``/``dimension_id``) are never touched
+        — only the ``suggested_dimension_id``/``dim_state_suggested``/
+        ``dim_reason``/``dim_rules_version`` columns change.
+        """
+        dimensions = self._load_dimensions(connection)
+        rows = connection.execute(
+            "SELECT evidence_id, quote FROM evidence WHERE case_id = ? AND status = 'active'",
+            (self._case_id,),
+        ).fetchall()
+        for row in rows:
+            dim_id, dim_state, dim_reason = self._dimension_suggestion(
+                connection, row["quote"], dimensions, matcher
+            )
+            connection.execute(
+                "UPDATE evidence SET suggested_dimension_id = ?,"
+                " dim_state_suggested = ?, dim_reason = ?,"
+                " dim_rules_version = ?"
+                " WHERE case_id = ? AND evidence_id = ?",
+                (
+                    dim_id,
+                    dim_state,
+                    dim_reason,
+                    DIM_RULES_VERSION,
+                    self._case_id,
+                    row["evidence_id"],
+                ),
+            )
+
+    def build_dimensions(self) -> dict:
+        """Parse the latest dims list version into the ``dimensions`` table.
+
+        One line becomes a dimension only when, after prototype name parsing,
+        it is 2-80 display characters, is a verbatim substring of its own
+        passage (the span is stored and re-verified with the spans helpers),
+        and passes the rule-4 output filter. Everything else is counted as
+        ``held_back``. Rebuilds the table for the latest version only; the
+        stable ids mean a re-uploaded list keeps the same ids for the same
+        names. Also writes one ``dimension_list.build`` audit row
+        (item_count = number of dimensions).
+        """
+        with self._store.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT material_id, MAX(version) AS v FROM materials
+                WHERE case_id = ? AND kind = 'dims' GROUP BY material_id
+                ORDER BY material_id LIMIT 1
+                """,
+                (self._case_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("no dimension list uploaded for this case")
+            list_material_id, list_version = row["material_id"], row["v"]
+            connection.execute(
+                "DELETE FROM dimensions WHERE case_id = ?",
+                (self._case_id,),
+            )
+            passage_rows = connection.execute(
+                """
+                SELECT passage_id, text FROM passages
+                WHERE case_id = ? AND material_id = ? AND version = ?
+                ORDER BY position
+                """,
+                (self._case_id, list_material_id, list_version),
+            ).fetchall()
+            from psychtool.core.spans import Span, verify_quote
+
+            material = self.get_material(list_material_id, list_version)
+            held_back = 0
+            count = 0
+            for passage_row in passage_rows:
+                text = passage_row["text"]
+                for raw_line in text.splitlines():
+                    name = parse_dimension_line(raw_line)
+                    if name is None or not is_safe_dimension_name(name):
+                        held_back += 1
+                        continue
+                    start = text.find(name)
+                    if start < 0:
+                        held_back += 1
+                        continue
+                    end = start + len(name)
+                    span = Span(
+                        material_id=list_material_id,
+                        material_version=list_version,
+                        passage_id=passage_row["passage_id"],
+                        start=start,
+                        end=end,
+                    )
+                    if not verify_quote(material, span, name):
+                        held_back += 1
+                        continue
+                    dimension_id = self._dimension_id(
+                        self._case_id, list_material_id, name
+                    )
+                    connection.execute(
+                        "INSERT OR REPLACE INTO dimensions"
+                        " (case_id, dimension_id, list_material_id, list_version,"
+                        "  passage_id, start, end, name)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            self._case_id,
+                            dimension_id,
+                            list_material_id,
+                            list_version,
+                            passage_row["passage_id"],
+                            start,
+                            end,
+                            name,
+                        ),
+                    )
+                    count += 1
+            self.append_audit(
+                case_id=self._case_id,
+                action="dimension_list.build",
+                object_type="material",
+                object_id=list_material_id,
+                item_count=count,
+            )
+        return {"dimensions": count, "held_back": held_back}
+
+    def list_dimensions(self) -> dict:
+        """Read-only view of HER dimension list plus derived counts.
+
+        Returns the latest list material, the parsed dimensions (spans
+        included), the held-back count, the fixed not-diagnosis disclaimer
+        and the number of evidence items whose effective state is
+        ``needs_review``.
+        """
+        row = self._db.execute(
+            """
+            SELECT material_id, version, title FROM materials
+            WHERE case_id = ? AND kind = 'dims'
+            ORDER BY material_id, version DESC LIMIT 1
+            """,
+            (self._case_id,),
+        ).fetchone()
+        items = self.list_evidence()
+        needs_review = sum(1 for item in items if item["dim_state"] == "needs_review")
+        from psychtool.core.dimensions import NOT_DIAGNOSIS
+
+        if row is None:
+            return {
+                "has_list": False,
+                "list": None,
+                "dimensions": [],
+                "held_back": 0,
+                "disclaimer": NOT_DIAGNOSIS,
+                "needs_review_count": needs_review,
+                "items": items,
+            }
+        held_back = self._held_back_count(
+            self._db, row["material_id"], row["version"]
+        )
+        list_material = self.get_material(row["material_id"], row["version"])
+        passage_texts = {p.id: p.text for p in list_material.passages}
+        dimensions = []
+        for dim in self._db.execute(
+            """
+            SELECT d.dimension_id, d.name, d.passage_id, d.start, d.end,
+                   p.position AS paragraph
+            FROM dimensions d
+            LEFT JOIN passages p
+              ON p.case_id = d.case_id AND p.material_id = d.list_material_id
+             AND p.version = d.list_version AND p.passage_id = d.passage_id
+            WHERE d.case_id = ? AND d.list_material_id = ? AND d.list_version = ?
+            ORDER BY p.position, d.start
+            """,
+            (self._case_id, row["material_id"], row["version"]),
+        ).fetchall():
+            text = passage_texts.get(dim["passage_id"], "")
+            start, end = dim["start"], dim["end"]
+            dimensions.append(
+                {
+                    "id": dim["dimension_id"],
+                    "name": dim["name"],
+                    "passage_id": dim["passage_id"],
+                    "paragraph": dim["paragraph"] or 0,
+                    "start": start,
+                    "end": end,
+                    # R7-AC9: only her uploaded range, nothing added.
+                    "quote_text_of_passage_span": text[start:end],
+                }
+            )
+        return {
+            "has_list": True,
+            "list": {
+                "material_id": row["material_id"],
+                "title": row["title"],
+                "version": row["version"],
+            },
+            "dimensions": dimensions,
+            "held_back": held_back,
+            "disclaimer": NOT_DIAGNOSIS,
+            "needs_review_count": needs_review,
+            "items": items,
+        }
+
+    def _held_back_count(
+        self,
+        connection: sqlite3.Connection,
+        list_material_id: str,
+        list_version: int,
+    ) -> int:
+        """Lines of the latest list version that did NOT become dimensions.
+
+        Recomputed deterministically from the stored list material: a line is
+        held back when it fails parsing, the verbatim-substring check or the
+        rule-4 output filter (ADR 0016).
+        """
+        rows = connection.execute(
+            """
+            SELECT text FROM passages
+            WHERE case_id = ? AND material_id = ? AND version = ?
+            ORDER BY position
+            """,
+            (self._case_id, list_material_id, list_version),
+        ).fetchall()
+        held_back = 0
+        for row in rows:
+            for raw_line in row["text"].splitlines():
+                name = parse_dimension_line(raw_line)
+                if name is None or not is_safe_dimension_name(name):
+                    held_back += 1
+        return held_back
 
     def list_evidence(self) -> list[dict]:
         """Active evidence rows plus superseded rows that carry a correction.
@@ -1333,10 +1800,41 @@ class CaseStore:
             (self._case_id,),
         ).fetchall()
         items = []
+        current_dimensions = self._load_dimensions(self._db)
+        current_ids = (
+            {d.id for d in current_dimensions} if current_dimensions else set()
+        )
+        current_names = (
+            {d.id: d.name for d in current_dimensions} if current_dimensions else {}
+        )
         for row in rows:
             superseded = row["status"] == "superseded"
             category_set_by = "clinician" if row["category"] else "suggestion"
             role_set_by = "clinician" if row["role"] else "suggestion"
+            # R7 effective dimension state: her choice always wins. A stale
+            # choice (her dimension left the latest list) shows as
+            # needs_review with the fixed check-reason; the row is kept.
+            if row["dimension_choice"] in ("confirmed", "changed"):
+                if row["dimension_id"] in current_ids:
+                    dim_state = "confirmed"
+                    dim_reason = "You chose this dimension."
+                    dim_set_by = "clinician"
+                    dimension_id = row["dimension_id"]
+                else:
+                    dim_state = "needs_review"
+                    dim_reason = STALE_CHOICE_REASON
+                    dim_set_by = "clinician"
+                    dimension_id = None
+            elif row["dimension_choice"] == "rejected":
+                dim_state = "rejected"
+                dim_reason = "You chose no dimension for this item."
+                dim_set_by = "clinician"
+                dimension_id = None
+            else:
+                dim_state = row["dim_state_suggested"] or "none"
+                dim_reason = row["dim_reason"] or ""
+                dim_set_by = "suggestion"
+                dimension_id = row["suggested_dimension_id"]
             items.append(
                 {
                     "id": row["evidence_id"],
@@ -1366,6 +1864,11 @@ class CaseStore:
                     "role_set_by": role_set_by,
                     "suggested_role": row["suggested_role"],
                     "suggested_role_reason": row["role_reason"],
+                    "dimension_id": dimension_id,
+                    "dimension_name": current_names.get(dimension_id),
+                    "dim_state": dim_state,
+                    "dim_reason": dim_reason,
+                    "dim_set_by": dim_set_by,
                     "kept_because_corrected": superseded,
                 }
             )
@@ -1416,6 +1919,8 @@ class CaseStore:
         ``set_category``/``set_role`` distinguish "not provided" from an
         explicit null reset. One transaction per call with one audit row
         (``evidence.categorize`` / ``evidence.set_role``; ids only, no text).
+        The audit row records the allowlisted VALUE she picked — the category
+        or role key, or ``reset`` (ADR 0016 / Alex's PT-07 answer 3).
         Unknown id raises KeyError; a non-allowlisted key raises ValueError.
         """
         if set_category and category is not None and category not in CATEGORY_KEYS:
@@ -1436,6 +1941,7 @@ class CaseStore:
                     action="evidence.categorize",
                     object_type="evidence",
                     object_id=evidence_id,
+                    value=category if category is not None else "reset",
                 )
             if set_role and current["role"] != role:
                 connection.execute(
@@ -1448,6 +1954,77 @@ class CaseStore:
                     action="evidence.set_role",
                     object_type="evidence",
                     object_id=evidence_id,
+                    value=role if role is not None else "reset",
+                )
+        return self.get_evidence(evidence_id)
+
+    def set_evidence_dimension(
+        self,
+        evidence_id: str,
+        *,
+        action: str | None = None,
+        dimension_id: str | None = None,
+    ) -> dict:
+        """Record her dimension choice (R7-AC4); one transaction + one audit row.
+
+        Exactly one of:
+
+        - ``action="confirm"`` — accept the currently suggested dimension
+          (only when the item has one);
+        - ``dimension_id="<dim_…>"`` — change to one dimension from HER table
+          (recorded as ``changed``; the id is validated against the current
+          dimensions table);
+        - ``action="none"`` — wrong, no dimension (recorded as ``rejected``);
+        - ``action="reset"`` — clear her choice and return to the suggestion.
+
+        Unknown evidence id raises KeyError; an unknown dimension id or an
+        invalid combination raises ValueError. The audit row records only
+        allowlisted values: ``confirm`` | ``none`` | ``reset`` or the
+        ``dim_`` id — never her text, never a dimension name (ADR 0016).
+        Her choice is never overwritten by refresh (same rule as
+        category/role).
+        """
+        current = self.get_evidence(evidence_id)  # KeyError before any write
+        if action is not None and dimension_id is not None:
+            raise ValueError("exactly one of action or dimension_id is allowed")
+        if action is None and dimension_id is None:
+            raise ValueError("exactly one of action or dimension_id is required")
+        if action is not None and action not in ("confirm", "none", "reset"):
+            raise ValueError("unknown dimension action")
+        dimensions = self.list_dimensions()
+        known_ids = {d["id"] for d in dimensions["dimensions"]}
+        if action == "confirm":
+            if not current["suggested_dimension_id"]:
+                raise ValueError("this item has no dimension to confirm")
+            new_choice, new_dimension = "confirmed", current["suggested_dimension_id"]
+            audit_value = "confirm"
+        elif action == "none":
+            new_choice, new_dimension = "rejected", None
+            audit_value = "none"
+        elif action == "reset":
+            new_choice, new_dimension = None, None
+            audit_value = "reset"
+        else:
+            if dimension_id not in known_ids:
+                raise ValueError("dimension is not on the allowlist")
+            new_choice, new_dimension = "changed", dimension_id
+            audit_value = dimension_id
+        with self._store.transaction() as connection:
+            if (
+                current["dimension_choice"] != new_choice
+                or current["dimension_id"] != new_dimension
+            ):
+                connection.execute(
+                    "UPDATE evidence SET dimension_choice = ?, dimension_id = ?"
+                    " WHERE case_id = ? AND evidence_id = ?",
+                    (new_choice, new_dimension, self._case_id, evidence_id),
+                )
+                self.append_audit(
+                    case_id=self._case_id,
+                    action="evidence.set_dimension",
+                    object_type="evidence",
+                    object_id=evidence_id,
+                    value=audit_value,
                 )
         return self.get_evidence(evidence_id)
 

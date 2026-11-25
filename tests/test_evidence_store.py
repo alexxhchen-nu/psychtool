@@ -92,7 +92,8 @@ def test_v4_database_migrates_to_v5_with_existing_data(tmp_path):
         "INSERT INTO cases VALUES ('case-old', 'synthetic', '2026-01-01', NULL)"
     )
     raw.execute(
-        "INSERT INTO materials VALUES ('case-old', 'doc', 1, 't', 'p', '2026-01-01')"
+        "INSERT INTO materials (case_id, material_id, version, title, provider, date)"
+        " VALUES ('case-old', 'doc', 1, 't', 'p', '2026-01-01')"
     )
     raw.execute(
         "INSERT INTO passages VALUES ('case-old', 'doc', 1, 'p001', 1, 'Old text here.')"
@@ -116,6 +117,177 @@ def test_v4_database_migrates_to_v5_with_existing_data(tmp_path):
     summary = case.refresh_evidence(RuleExtractor())
     assert summary["materials"] == {"doc": 1}
     assert len(case.list_evidence()) == 1
+
+
+
+# -- migration v5 -> v6 --------------------------------------------------------
+
+# Genuine v5 table shapes (no materials.kind, no audit value, no evidence
+# dimension columns, no dimensions table). Used so this test is a real
+# additive migration, not a current-schema downgrade.
+_V5_MATERIALS = """
+    CREATE TABLE IF NOT EXISTS materials (
+        case_id    TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+        material_id TEXT NOT NULL,
+        version    INTEGER NOT NULL CHECK (version >= 1),
+        title      TEXT NOT NULL,
+        provider   TEXT NOT NULL,
+        date       TEXT NOT NULL,
+        PRIMARY KEY (case_id, material_id, version)
+    )
+"""
+_V5_AUDIT = """
+    CREATE TABLE IF NOT EXISTS audit_log (
+        seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id      TEXT,
+        ts           TEXT NOT NULL,
+        action       TEXT NOT NULL,
+        object_type  TEXT NOT NULL,
+        object_id    TEXT NOT NULL,
+        content_hash TEXT,
+        destination  TEXT,
+        prev_hash    TEXT NOT NULL,
+        entry_hash   TEXT NOT NULL,
+        item_count   INTEGER CHECK (item_count IS NULL OR item_count >= 0)
+    )
+"""
+_V5_EVIDENCE = """
+    CREATE TABLE IF NOT EXISTS evidence (
+        case_id            TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+        evidence_id        TEXT NOT NULL,
+        material_id        TEXT NOT NULL,
+        material_version   INTEGER NOT NULL CHECK (material_version >= 1),
+        passage_id         TEXT NOT NULL,
+        start              INTEGER NOT NULL CHECK (start >= 0),
+        end                INTEGER NOT NULL CHECK (end > start),
+        quote              TEXT NOT NULL,
+        suggested_category TEXT NOT NULL
+            CHECK (suggested_category IN ('family_history', 'medical_history',
+                                          'test_results', 'behavioral_observations',
+                                          'development_school', 'daily_living',
+                                          'other', 'uncategorized')),
+        category_reason    TEXT NOT NULL,
+        suggested_role     TEXT NOT NULL
+            CHECK (suggested_role IN ('school', 'caregiver', 'medical_record',
+                                      'clinician', 'client', 'to_confirm')),
+        role_reason        TEXT NOT NULL,
+        category           TEXT
+            CHECK (category IS NULL OR category IN ('family_history', 'medical_history',
+                                                    'test_results', 'behavioral_observations',
+                                                    'development_school', 'daily_living',
+                                                    'other', 'uncategorized')),
+        role               TEXT
+            CHECK (role IS NULL OR role IN ('school', 'caregiver', 'medical_record',
+                                            'clinician', 'client', 'to_confirm')),
+        status             TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+        rules_version      TEXT NOT NULL,
+        PRIMARY KEY (case_id, evidence_id),
+        FOREIGN KEY (case_id, material_id, material_version, passage_id)
+            REFERENCES passages(case_id, material_id, version, passage_id)
+    )
+"""
+
+
+def _build_v5_database(db) -> None:
+    """A genuine v5 database: current schema minus v6 columns/tables."""
+    from psychtool.store.audit import GENESIS_PREV_HASH, compute_entry_hash
+    from psychtool.store.sqlite_store import _SCHEMA_STATEMENTS
+
+    replacements = {
+        "CREATE TABLE IF NOT EXISTS materials": _V5_MATERIALS,
+        "CREATE TABLE IF NOT EXISTS audit_log": _V5_AUDIT,
+        "CREATE TABLE IF NOT EXISTS evidence": _V5_EVIDENCE,
+    }
+    raw = sqlite3.connect(db)
+    raw.execute("PRAGMA foreign_keys = ON")
+    for statement in _SCHEMA_STATEMENTS:
+        if "CREATE TABLE IF NOT EXISTS dimensions" in statement:
+            continue
+        for token, ddl in replacements.items():
+            if token in statement:
+                raw.execute(ddl)
+                break
+        else:
+            raw.execute(statement)
+    raw.execute(
+        "INSERT INTO cases VALUES ('case-old', 'synthetic', '2026-01-01', NULL)"
+    )
+    raw.execute(
+        "INSERT INTO materials VALUES ('case-old', 'doc', 1, 't', 'p', '2026-01-01')"
+    )
+    raw.execute(
+        "INSERT INTO passages VALUES ('case-old', 'doc', 1, 'p001', 1, 'Old text here.')"
+    )
+    raw.execute(
+        "INSERT INTO evidence (case_id, evidence_id, material_id, material_version,"
+        " passage_id, start, end, quote, suggested_category, category_reason,"
+        " suggested_role, role_reason, category, role, status, rules_version)"
+        " VALUES ('case-old', 'ev_old', 'doc', 1, 'p001', 0, 13, 'Old text here.',"
+        " 'uncategorized', 'No words in the text indicate a category, so the"
+        " system does not choose for you.', 'to_confirm',"
+        " 'No words in the text indicate a source role, so the system does"
+        " not choose for you.', 'other', NULL, 'active', 'cat-1')"
+    )
+    fields = {
+        "case_id": "case-old",
+        "ts": "2026-01-01T00:00:00+00:00",
+        "action": "material.import",
+        "object_type": "material",
+        "object_id": "doc",
+        "content_hash": None,
+        "destination": None,
+        "prev_hash": GENESIS_PREV_HASH,
+        "item_count": 1,
+    }
+    fields["entry_hash"] = compute_entry_hash(fields)
+    raw.execute(
+        "INSERT INTO audit_log (case_id, ts, action, object_type, object_id,"
+        " content_hash, destination, prev_hash, entry_hash, item_count)"
+        " VALUES (:case_id, :ts, :action, :object_type, :object_id,"
+        " :content_hash, :destination, :prev_hash, :entry_hash, :item_count)",
+        fields,
+    )
+    raw.execute("PRAGMA user_version = 5")
+    raw.commit()
+    raw.close()
+
+
+def test_v5_database_migrates_to_v6_with_existing_data(tmp_path):
+    db = tmp_path / "psychtool.db"
+    _build_v5_database(db)
+
+    store = SqliteStore(db)
+    connection = store._connect()
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
+    material = connection.execute(
+        "SELECT title, kind FROM materials WHERE case_id = 'case-old'"
+    ).fetchone()
+    assert tuple(material) == ("t", "case")
+    evidence = connection.execute(
+        "SELECT quote, category, suggested_dimension_id, dim_state_suggested,"
+        " dim_reason, dimension_choice, dimension_id, dim_rules_version"
+        " FROM evidence WHERE evidence_id = 'ev_old'"
+    ).fetchone()
+    assert evidence["quote"] == "Old text here."
+    assert evidence["category"] == "other"
+    assert evidence["suggested_dimension_id"] is None
+    assert evidence["dim_state_suggested"] is None
+    assert evidence["dim_reason"] is None
+    assert evidence["dimension_choice"] is None
+    assert evidence["dimension_id"] is None
+    assert evidence["dim_rules_version"] is None
+    assert connection.execute("SELECT COUNT(*) FROM dimensions").fetchone()[0] == 0
+    # value column exists; pre-migration rows stay NULL and the chain verifies.
+    assert connection.execute(
+        "SELECT value FROM audit_log WHERE object_id = 'doc'"
+    ).fetchone()[0] is None
+    ok, count, bad = verify_audit_chain(store)
+    assert (ok, count, bad) == (True, 1, None)
+    # The migrated case still lists the kept correction.
+    case = store.case("case-old")
+    items = {item["id"]: item for item in case.list_evidence()}
+    assert "ev_old" in items
+    assert items["ev_old"]["category"] == "other"
 
 
 # -- refresh -------------------------------------------------------------------

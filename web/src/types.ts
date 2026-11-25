@@ -138,6 +138,13 @@ export interface EvidenceItem {
   role_set_by: 'clinician' | 'suggestion'
   /** Superseded by newer rules but kept because it carries her correction. */
   kept_because_corrected: boolean
+  /** R7: effective dimension (her choice wins, else the suggestion). */
+  dimension_id: string | null
+  dimension_name: string | null
+  dim_state: 'needs_review' | 'none' | 'confirmed' | 'rejected'
+  /** Short reason quoting visible text (<= 140 chars; R7-AC3). */
+  dim_reason: string
+  dim_set_by: 'clinician' | 'suggestion'
 }
 export interface EvidenceResponse {
   extractor: string
@@ -176,4 +183,47 @@ export interface PasteMaterialInput {
   date: string
   text: string
   synthetic_confirmed: boolean
+  /** ADR 0016: 'case' (default) or 'dims' (her uploaded dimension list). */
+  kind?: 'case' | 'dims'
+}
+
+// -- R7 (PT-08 / ADR 0016): dimension mapping --------------------------------
+
+export interface DimensionListInfo {
+  material_id: string
+  title: string
+  version: number
+}
+export interface DimensionEntry {
+  id: string
+  name: string
+  passage_id: string
+  paragraph: number
+  start: number
+  end: number
+  /** R7-AC9: only her uploaded range, nothing added. */
+  quote_text_of_passage_span: string
+}
+export type DimensionState = 'needs_review' | 'none' | 'confirmed' | 'rejected'
+export interface DimensionsResponse {
+  has_list: boolean
+  list: DimensionListInfo | null
+  dimensions: DimensionEntry[]
+  held_back: number
+  disclaimer: string
+  needs_review_count: number
+  items: EvidenceItem[]
+}
+export type DimensionChoiceInput =
+  | { action: 'confirm' }
+  | { dimension_id: string }
+  | { action: 'none' }
+  | { action: 'reset' }
+export interface DimensionChoiceResult {
+  id: string
+  dimension_id: string | null
+  dimension_name: string | null
+  dim_state: DimensionState
+  dim_reason: string
+  dim_set_by: 'clinician' | 'suggestion'
 }
