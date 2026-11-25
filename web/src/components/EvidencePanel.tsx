@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { getEvidence } from '../api'
-import { droppedNotice, evidenceSourceLine, highlightParts } from '../evidence'
+import { getEvidence, refreshEvidence, setEvidenceChoice } from '../api'
+import {
+  CATEGORY_OPTIONS,
+  ROLE_OPTIONS,
+  categoryLabel,
+  droppedNotice,
+  evidenceSourceLine,
+  highlightParts,
+  reasonLine,
+  roleLabel,
+  setByText,
+} from '../evidence'
 import type { EvidenceItem, EvidenceResponse, Material } from '../types'
 
 const HEADER_TEXT =
@@ -18,6 +28,8 @@ export default function EvidencePanel({ workspaceId, materials, busy }: Evidence
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null)
   const [selected, setSelected] = useState<EvidenceItem | null>(null)
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [dropped, setDropped] = useState(0)
   const lifecycle = useRef<symbol | null>(null)
 
   useEffect(() => {
@@ -26,23 +38,35 @@ export default function EvidencePanel({ workspaceId, materials, busy }: Evidence
   }, [])
 
   // Reload whenever the workspace (or its materials) changes; ignore stale
-  // responses after unmount/case switch, like the other panels do.
+  // responses after unmount/case switch, like the other panels do. When the
+  // server says the latest material versions have no evidence rows yet
+  // (needs_extraction), run one refresh first, then load (ADR 0015).
   useEffect(() => {
     const current = lifecycle.current
     if (current === null) return
     let active = true
     setSelected(null)
-    getEvidence(workspaceId)
-      .then((response) => {
-        if (!active || lifecycle.current !== current) return
+    setDropped(0)
+    const stale = () => !active || lifecycle.current !== current
+    ;(async () => {
+      try {
+        let response = await getEvidence(workspaceId)
+        if (stale()) return
+        if (response.needs_extraction) {
+          const summary = await refreshEvidence(workspaceId)
+          if (stale()) return
+          setDropped(summary.dropped)
+          response = await getEvidence(workspaceId)
+          if (stale()) return
+        }
         setEvidence(response)
         setError('')
-      })
-      .catch(() => {
-        if (!active || lifecycle.current !== current) return
+      } catch {
+        if (stale()) return
         setEvidence(null)
         setError('Could not load evidence. Reload to try again.')
-      })
+      }
+    })()
     return () => { active = false }
   }, [workspaceId, materials])
 
@@ -64,6 +88,29 @@ export default function EvidencePanel({ workspaceId, materials, busy }: Evidence
   const parts = selected && passageText !== undefined
     ? highlightParts(passageText, selected.start, selected.end)
     : null
+
+  // Her category/role choice: PUT, then reload the list so chips, reasons and
+  // the selected item reflect what the server persisted (R5 / ADR 0015).
+  async function choose(item: EvidenceItem, choice: { category?: EvidenceItem['category'] | null; role?: EvidenceItem['role'] | null }) {
+    const current = lifecycle.current
+    if (current === null || saving) return
+    setSaving(true)
+    try {
+      await setEvidenceChoice(workspaceId, item.id, choice)
+      if (lifecycle.current !== current) return
+      const response = await getEvidence(workspaceId)
+      if (lifecycle.current !== current) return
+      setEvidence(response)
+      const updated = response.items.find((row) => row.id === item.id)
+      if (updated) setSelected(updated)
+      setError('')
+    } catch {
+      if (lifecycle.current !== current) return
+      setError('Could not save your choice. Reload to try again.')
+    } finally {
+      if (lifecycle.current === current) setSaving(false)
+    }
+  }
 
   return (
     <section className="names-panel evidence-panel" aria-label="Evidence">
@@ -88,16 +135,67 @@ export default function EvidencePanel({ workspaceId, materials, busy }: Evidence
                 onClick={() => setSelected(item)}
               >
                 <span className="evidence-quote">{item.quote}</span>
+                <span className="evidence-chips">
+                  <span
+                    className={`evidence-chip category-chip${item.category === 'uncategorized' ? ' uncategorized' : ''}`}
+                    data-testid="category-chip"
+                  >
+                    {item.category_label || categoryLabel(item.category)}
+                  </span>
+                  <span
+                    className="evidence-chip role-chip"
+                    data-testid="role-chip"
+                  >
+                    From: {item.role_label || roleLabel(item.role)}
+                  </span>
+                </span>
+                <span className="evidence-reason" data-testid="category-reason">
+                  {reasonLine(item.category_reason)}
+                </span>
+                {setByText(item.category_set_by) && (
+                  <span className="evidence-set-by">{setByText(item.category_set_by)}</span>
+                )}
+                {setByText(item.role_set_by) && (
+                  <span className="evidence-set-by">{setByText(item.role_set_by)}</span>
+                )}
                 <span className="evidence-source-line">
                   {evidenceSourceLine(item.material_title, item.material_version, item.paragraph)}
                 </span>
               </button>
+              <div className="evidence-choice-controls">
+                <label className="evidence-choice">
+                  Change category
+                  <select
+                    aria-label="Change category"
+                    value={item.category}
+                    disabled={busy || saving}
+                    onChange={(event) => choose(item, { category: event.target.value as EvidenceItem['category'] })}
+                  >
+                    {CATEGORY_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="evidence-choice">
+                  Change source role
+                  <select
+                    aria-label="Change source role"
+                    value={item.role}
+                    disabled={busy || saving}
+                    onChange={(event) => choose(item, { role: event.target.value as EvidenceItem['role'] })}
+                  >
+                    {ROLE_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </li>
           ))}
         </ul>
       )}
-      {evidence && droppedNotice(evidence.dropped) && (
-        <p className="dropped-notice" role="status">{droppedNotice(evidence.dropped)}</p>
+      {droppedNotice(dropped) && (
+        <p className="dropped-notice" role="status">{droppedNotice(dropped)}</p>
       )}
       {selected && (
         <div className="evidence-source" data-testid="evidence-source">

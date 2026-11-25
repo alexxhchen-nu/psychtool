@@ -94,7 +94,11 @@ test('R4-AC1 R4-AC2 R4-AC3 evidence items list quote, material, version, paragra
     dropped: number
   }
   expect(evidence.extractor).toBe('rule')
-  expect(evidence.dropped).toBe(0)
+  // `dropped` is only reported by the refresh route (ADR 0015); GET is read-only.
+  const refreshed = await (
+    await page.request.post(`/api/workspaces/${caseId}/evidence/refresh`, { headers })
+  ).json() as { dropped: number }
+  expect(refreshed.dropped).toBe(0)
   const materials = (await (
     await page.request.get(`/api/workspaces/${caseId}/materials`, { headers })
   ).json()) as { id: string; passages: { id: string; text: string }[] }[]

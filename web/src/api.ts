@@ -1,4 +1,4 @@
-import type { ApprovalInput, EgressRequest, EvidenceResponse, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
+import type { ApprovalInput, EgressRequest, EvidenceChoiceInput, EvidenceChoiceResult, EvidenceRefreshResult, EvidenceResponse, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
 
 /** Never expose an error response body: validation/provider errors may contain input. */
 export class ApiError extends Error {
@@ -132,6 +132,24 @@ export function getEgress(workspaceId: string, requestId: string): Promise<Egres
 
 export function getEvidence(workspaceId: string): Promise<EvidenceResponse> {
   return apiRequest(`${workspaceUrl(workspaceId)}/evidence`)
+}
+
+/** R5 (ADR 0015): recompute persisted evidence; returns per-material counts. */
+export function refreshEvidence(workspaceId: string): Promise<EvidenceRefreshResult> {
+  return apiRequest(`${workspaceUrl(workspaceId)}/evidence/refresh`, { method: 'POST' })
+}
+
+/** R5: record her category/role choice (null resets to the suggestion). */
+export function setEvidenceChoice(
+  workspaceId: string,
+  evidenceId: string,
+  choice: EvidenceChoiceInput,
+): Promise<EvidenceChoiceResult> {
+  return jsonRequest(
+    `${workspaceUrl(workspaceId)}/evidence/${encodeURIComponent(evidenceId)}`,
+    'PUT',
+    choice,
+  )
 }
 
 export function approveEgress(workspaceId: string, requestId: string, input: ApprovalInput): Promise<EgressRequest> {

@@ -1,5 +1,18 @@
 import { describe, expect, test } from 'bun:test'
-import { droppedNotice, evidenceSourceLine, highlightParts } from '../src/evidence'
+import {
+  CATEGORY_OPTIONS,
+  NO_REASON_TEXT,
+  ROLE_OPTIONS,
+  categoryLabel,
+  droppedNotice,
+  evidenceSourceLine,
+  highlightParts,
+  reasonLine,
+  roleLabel,
+  roleLine,
+  setByText,
+} from '../src/evidence'
+import type { EvidenceCategory, EvidenceRole } from '../src/types'
 
 describe('highlightParts', () => {
   test('slices an ASCII range by code-point offsets', () => {
@@ -69,7 +82,7 @@ describe('droppedNotice', () => {
 
   test('uses the singular form for one dropped candidate', () => {
     expect(droppedNotice(1)).toBe(
-      '1 candidate were dropped because the quote did not match the source exactly.',
+      '1 candidate was dropped because the quote did not match the source exactly.',
     )
   })
 
@@ -77,5 +90,93 @@ describe('droppedNotice', () => {
     expect(droppedNotice(3)).toBe(
       '3 candidates were dropped because the quote did not match the source exactly.',
     )
+  })
+})
+
+// -- R5 (PT-07 / ADR 0015): category & role labels ----------------------------
+
+describe('categoryLabel', () => {
+  test('maps every allowlisted category key to its label', () => {
+    expect(categoryLabel('family_history')).toBe('Family history')
+    expect(categoryLabel('medical_history')).toBe('Medical history')
+    expect(categoryLabel('test_results')).toBe('Test results')
+    expect(categoryLabel('behavioral_observations')).toBe('Behavioral observations')
+    expect(categoryLabel('development_school')).toBe('Development & school')
+    expect(categoryLabel('daily_living')).toBe('Daily living & function')
+    expect(categoryLabel('other')).toBe('Other')
+    expect(categoryLabel('uncategorized')).toBe('Uncategorized')
+  })
+
+  test('passes an unknown key through verbatim', () => {
+    expect(categoryLabel('future_key' as EvidenceCategory)).toBe('future_key')
+  })
+})
+
+describe('roleLabel', () => {
+  test('maps every allowlisted role key to its label', () => {
+    expect(roleLabel('school')).toBe('School')
+    expect(roleLabel('caregiver')).toBe('Caregiver')
+    expect(roleLabel('medical_record')).toBe('Medical record')
+    expect(roleLabel('clinician')).toBe('Clinician')
+    expect(roleLabel('client')).toBe('Client')
+    expect(roleLabel('to_confirm')).toBe('To confirm')
+  })
+
+  test('passes an unknown key through verbatim', () => {
+    expect(roleLabel('future_key' as EvidenceRole)).toBe('future_key')
+  })
+})
+
+describe('CATEGORY_OPTIONS / ROLE_OPTIONS', () => {
+  test('offer exactly the 8 category keys including Other and Uncategorized', () => {
+    expect(CATEGORY_OPTIONS.map((option) => option.key)).toEqual([
+      'family_history',
+      'medical_history',
+      'test_results',
+      'behavioral_observations',
+      'development_school',
+      'daily_living',
+      'other',
+      'uncategorized',
+    ])
+  })
+
+  test('offer exactly the 6 role keys', () => {
+    expect(ROLE_OPTIONS.map((option) => option.key)).toEqual([
+      'school',
+      'caregiver',
+      'medical_record',
+      'clinician',
+      'client',
+      'to_confirm',
+    ])
+  })
+})
+
+describe('roleLine', () => {
+  test('formats the source role line', () => {
+    expect(roleLine('caregiver')).toBe('From: Caregiver')
+    expect(roleLine('to_confirm')).toBe('From: To confirm')
+  })
+})
+
+describe('reasonLine', () => {
+  test('prefixes the reason and keeps the full text', () => {
+    expect(reasonLine('The text mentions “mother”, which relates to “Family history”.'))
+      .toBe('Why: The text mentions “mother”, which relates to “Family history”.')
+  })
+
+  test('falls back to fixed text when the reason is empty', () => {
+    expect(reasonLine('')).toBe(`Why: ${NO_REASON_TEXT}`)
+  })
+})
+
+describe('setByText', () => {
+  test('marks her own choices', () => {
+    expect(setByText('clinician')).toBe('Set by you')
+  })
+
+  test('says nothing for rule suggestions', () => {
+    expect(setByText('suggestion')).toBeNull()
   })
 })

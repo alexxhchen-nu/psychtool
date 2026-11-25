@@ -55,7 +55,13 @@ from psychtool.core.egress import (
     get_egress_request,
     prepare_egress_request,
 )
-from psychtool.core.extract import EvidenceResult, RuleExtractor, extract_evidence
+from psychtool.core.extract import RuleExtractor
+from psychtool.core.categorize import (
+    CATEGORY_KEYS,
+    ROLE_KEYS,
+    RULES_VERSION,
+    default_rules,
+)
 from psychtool.core.report_templates import list_templates, load_template, manifest_as_dict
 from psychtool.core.sections import (
     SectionStatus,
@@ -78,6 +84,8 @@ from psychtool.server.security import (
     resolve_session_token,
 )
 from psychtool.store.sqlite_store import (
+    CLINICIAN_CATEGORY_REASON,
+    CLINICIAN_ROLE_REASON,
     CaseExistsError,
     CaseStore,
     SqliteStore,
@@ -141,6 +149,39 @@ class PasteMaterialPayload(BaseModel):
     date: str
     text: str
     synthetic_confirmed: bool = False
+
+
+class EvidenceChoicePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: str | None = None
+    role: str | None = None
+
+
+def _evidence_labels() -> tuple[dict[str, str], dict[str, str]]:
+    """key -> display label for the current rules (incl. fallback keys)."""
+    rules = default_rules()
+    category_labels = {rule.key: rule.label for rule in rules.categories}
+    category_labels["uncategorized"] = "Uncategorized"
+    category_labels["other"] = "Other"
+    role_labels = {rule.key: rule.label for rule in rules.roles}
+    role_labels["to_confirm"] = "To confirm"
+    return category_labels, role_labels
+
+
+def _refresh_evidence_after_import(case: CaseStore, material_id: str) -> None:
+    """Best-effort extraction right after a successful import (ADR 0015).
+
+    Only the imported material is refreshed — the cost stays proportional to
+    the upload, not to the whole case. A failure here must not undo the
+    material: the evidence list simply reports ``needs_extraction`` until a
+    manual refresh succeeds. Only the exception type is logged — never
+    material text.
+    """
+    try:
+        case.refresh_evidence(RuleExtractor(), material_ids={material_id})
+    except Exception as exc:  # covered by test_import_survives_failed_auto_extraction
+        logger.error("evidence refresh after import failed: %s", type(exc).__name__)
 
 
 def _egress_response(request: EgressRequest) -> dict:
@@ -357,6 +398,7 @@ def create_app(session_token: str | None = None) -> FastAPI:
             ) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail="import unavailable") from exc
+        _refresh_evidence_after_import(case, material.id)
         response = {"material": material.model_dump(), "identifier_findings": findings,
                     "blocked_paragraphs": blocked_count,
                     "requires_human_review": True}
@@ -396,6 +438,7 @@ def create_app(session_token: str | None = None) -> FastAPI:
         # here means the file form stops asking once any material was
         # confirmed as synthetic (ADR 0012). One audit row, set-once.
         case.confirm_synthetic()  # audit row written in the same transaction
+        _refresh_evidence_after_import(case, material.id)
         response = {"material": material.model_dump(), "identifier_findings": findings,
                     "blocked_paragraphs": blocked_count,
                     "requires_human_review": True}
@@ -409,35 +452,99 @@ def create_app(session_token: str | None = None) -> FastAPI:
 
     @app.get("/api/workspaces/{case_id}/evidence")
     def evidence(case_id: str) -> dict:
-        """R4 (ADR 0014): verbatim evidence sentences for her review.
+        """R4+R5 (ADR 0014/0015): persisted verbatim evidence for her review.
 
-        Computed on the fly from the LATEST version of each material of this
-        case only; nothing is stored and no claims, sections, egress rows or
-        audit rows are written. Each item carries its quote plus the
-        material id/title/version, paragraph and code-point character range
-        so the UI can scroll to and highlight the exact source text.
+        Read-only: returns the rows written by the last refresh (extraction +
+        categorization run at upload time or via the refresh route), latest
+        material versions only, case-scoped. Effective category/role is her
+        choice when set, otherwise the current suggestion. R6 invalidation of
+        sentences/sections/egress on correction is deferred to PT-09.
         """
         case = _case(case_id)
-        materials = case.list_materials()
-        result: EvidenceResult = extract_evidence(RuleExtractor(), materials)
-        titles = {material.id: material.title for material in materials}
+        category_labels, role_labels = _evidence_labels()
+        items = []
+        for row in case.list_evidence():
+            items.append(
+                {
+                    **row,
+                    "category_label": category_labels.get(row["category"], row["category"]),
+                    "suggested_category_label": category_labels.get(
+                        row["suggested_category"], row["suggested_category"]
+                    ),
+                    "role_label": role_labels.get(row["role"], row["role"]),
+                }
+            )
         return {
             "extractor": RuleExtractor().name,
-            "items": [
-                {
-                    "id": item.id,
-                    "quote": item.quote,
-                    "material_id": item.span.material_id,
-                    "material_title": titles.get(item.span.material_id, ""),
-                    "material_version": item.span.material_version,
-                    "passage_id": item.span.passage_id,
-                    "paragraph": item.paragraph,
-                    "start": item.span.start,
-                    "end": item.span.end,
-                }
-                for item in result.items
-            ],
-            "dropped": result.dropped,
+            "rules_version": RULES_VERSION,
+            "items": items,
+            "needs_extraction": case.evidence_needs_extraction(),
+        }
+
+    @app.post("/api/workspaces/{case_id}/evidence/refresh")
+    def refresh_evidence(case_id: str) -> dict:
+        """Recompute persisted evidence (idempotent; ADR 0015)."""
+        case = _case(case_id)
+        summary = case.refresh_evidence(RuleExtractor())
+        return {
+            "extractor": RuleExtractor().name,
+            "rules_version": RULES_VERSION,
+            "materials": summary["materials"],
+            "dropped": summary["dropped"],
+            "needs_extraction": case.evidence_needs_extraction(),
+        }
+
+    @app.put("/api/workspaces/{case_id}/evidence/{evidence_id}")
+    def put_evidence(case_id: str, evidence_id: str, body: EvidenceChoicePayload) -> dict:
+        """Record her category/role choice for one evidence item (R5)."""
+        if "category" not in body.model_fields_set and "role" not in body.model_fields_set:
+            raise HTTPException(status_code=400, detail="invalid evidence choice")
+        if body.category is not None and body.category not in CATEGORY_KEYS:
+            raise HTTPException(status_code=400, detail="invalid evidence choice")
+        if body.role is not None and body.role not in ROLE_KEYS:
+            raise HTTPException(status_code=400, detail="invalid evidence choice")
+        case = _case(case_id)
+        try:
+            row = case.set_evidence_choice(
+                evidence_id,
+                category=body.category,
+                role=body.role,
+                set_category="category" in body.model_fields_set,
+                set_role="role" in body.model_fields_set,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="evidence not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid evidence choice") from exc
+        # ``evidence.categorize`` / ``evidence.set_role`` audit rows were
+        # appended by the store in the same transaction (ids only, no text).
+        category_labels, role_labels = _evidence_labels()
+        effective_category = row["category"] or row["suggested_category"]
+        effective_role = row["role"] or row["suggested_role"]
+        category_set_by = "clinician" if row["category"] else "suggestion"
+        role_set_by = "clinician" if row["role"] else "suggestion"
+        return {
+            "id": row["evidence_id"],
+            "category": effective_category,
+            "category_label": category_labels.get(effective_category, effective_category),
+            "category_reason": (
+                CLINICIAN_CATEGORY_REASON
+                if category_set_by == "clinician"
+                else row["category_reason"]
+            ),
+            "category_set_by": category_set_by,
+            "suggested_category": row["suggested_category"],
+            "suggested_category_reason": row["category_reason"],
+            "role": effective_role,
+            "role_label": role_labels.get(effective_role, effective_role),
+            "role_reason": (
+                CLINICIAN_ROLE_REASON
+                if role_set_by == "clinician"
+                else row["role_reason"]
+            ),
+            "role_set_by": role_set_by,
+            "suggested_role": row["suggested_role"],
+            "suggested_role_reason": row["role_reason"],
         }
 
     @app.get("/api/workspaces/{case_id}/materials/{material_id}/suggestions")

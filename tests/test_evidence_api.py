@@ -85,7 +85,6 @@ def test_r4_ac1_evidence_items_have_quote_and_range(client):
     _seed(client)
     payload = _evidence(client)
     assert payload["extractor"] == "rule"
-    assert payload["dropped"] == 0
     items = payload["items"]
     assert len(items) == 3  # two caregiver sentences + one self-report
 
@@ -152,7 +151,12 @@ def test_evidence_unknown_case_404(client):
 
 def test_evidence_empty_case_has_no_items(client):
     payload = _evidence(client)
-    assert payload == {"extractor": "rule", "items": [], "dropped": 0}
+    assert payload == {
+        "extractor": "rule",
+        "rules_version": "rule-1",
+        "items": [],
+        "needs_extraction": False,
+    }
 
 
 # -- R4-AC3 -------------------------------------------------------------------
