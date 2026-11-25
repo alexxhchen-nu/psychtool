@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 app_module = importlib.import_module("psychtool.server.app")
 from psychtool.server.app import create_app
+from tests.conftest import build_client
 
 
 @pytest.fixture
@@ -17,7 +18,7 @@ def spa_client(tmp_path, monkeypatch):
     (dist / "favicon.ico").write_bytes(b"ico")
     monkeypatch.setattr(app_module, "_WEB_DIST", dist)
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
-    return TestClient(create_app())
+    return build_client(create_app())
 
 
 def test_unknown_api_path_returns_json_404(spa_client):

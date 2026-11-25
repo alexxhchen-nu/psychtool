@@ -37,12 +37,14 @@ cd web && bun install && bun run build   # build the frontend (FastAPI serves we
 cd .. && uv run psychtool-server         # open http://127.0.0.1:8000
 ```
 
+**Local security baseline (ADR 0011).** The server binds to loopback only (a non-loopback `PSYCHTOOL_HOST` refuses to start); every start mints a session token that all `/api/*` routes (except `GET /api/health`) require via `X-Psychtool-Token`; every response carries a strict CSP and hardening headers; startup self-checks refuse a database inside a cloud-sync folder (disk encryption warns only). The audit trail is an append-only, hash-chained `audit_log` table inside SQLite, written in the same transaction as the state change. **Dev note**: pages served by the server itself carry the token automatically; when using the Vite dev server, set the same `PSYCHTOOL_SESSION_TOKEN` (≥32 chars) for both the backend and the frontend proxy, or the API answers 401.
+
 Tests:
 
 ```bash
-uv run --extra dev pytest -q                          # backend
-cd web && bun test && bun run build                   # frontend unit tests + build
-cd web && bunx playwright install chromium && bun run e2e   # end-to-end (build web/dist first)
+uv run --extra dev pytest -q                          # backend (incl. test_security / test_selfcheck / test_audit_log / test_send_lock_recovery)
+cd web && bun test && bun run build                   # frontend unit tests (incl. api.ts token, send_interrupted state) + build
+cd web && bunx playwright install chromium && bun run e2e   # end-to-end (incl. security.e2e: CSP headers, no CSP console errors, tokenless 401)
 ```
 
 <div id="first-workflow"></div>

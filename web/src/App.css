@@ -1,4 +1,6 @@
-﻿@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap');
+﻿/* No remote font import: the strict CSP (ADR 0011) allows only 'self', and
+   the app makes no network calls besides its own API. The named fonts are
+   used when installed locally; otherwise the system stacks below apply. */
 
 :root {
   --paper: #f8f9f6;
@@ -13,9 +15,9 @@
   --blue: #345b8c;
   --radius-control: 8px;
   --radius-panel: 16px;
-  --font-body: 'Manrope', sans-serif;
+  --font-body: 'Manrope', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-document: 'Newsreader', Georgia, serif;
-  --font-data: 'DM Mono', monospace;
+  --font-data: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * { box-sizing: border-box; }

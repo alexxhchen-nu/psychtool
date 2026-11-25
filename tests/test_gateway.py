@@ -530,7 +530,10 @@ def test_received_http_post_with_unusable_response_cannot_be_retried(tmp_path, r
         assert deliveries == [approved.envelope.model_dump()]
         assert get_egress_request(workspace, approved.request_id).status == "approved"
         lock = workspace / "egress" / f"{approved.request_id}.send.lock"
-        assert len(lock.read_text(encoding="ascii")) == 64
+        # The lock owner names the owning process (boot_id:pid:random) so
+        # startup recovery can tell a stale lock from a live one (ADR 0011).
+        owner = lock.read_text(encoding="ascii")
+        assert len(owner.split(":")) == 3
     finally:
         server.shutdown()
         thread.join(timeout=2)

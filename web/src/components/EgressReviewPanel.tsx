@@ -33,6 +33,7 @@ const phaseLabels: Record<EgressPhase, string> = {
   restoring: 'Checking saved request...', idle: 'No request prepared', preparing: 'Preparing request...',
   prepared: 'Prepared — review required', approving: 'Approving request...', approved: 'Approved — not sent',
   sending: 'Sending once...', sent: 'Sent — no resend', invalidated: 'Invalidated — prepare again',
+  send_interrupted: 'Send interrupted — prepare a new request',
   output_blocked: 'Output blocked — no resend', uncertain_failure: 'Delivery uncertain — no resend', error: 'Request unavailable',
 }
 const storageMessage = 'The browser could not safely update or read the saved request ID. Recovery may be unavailable. Sending is blocked unless removal of the saved ID can be verified.'
@@ -295,8 +296,8 @@ export default function EgressReviewPanel({
   const locked = disabled || busy
   const confirmation = { reviewer, syntheticReason, confirmed }
   const approvalReady = request !== null && approvalInput(request, confirmation) !== null
-  const terminal = ['sent', 'output_blocked', 'uncertain_failure'].includes(state.phase)
-  const errorMessage = ['error', 'invalidated', 'output_blocked', 'uncertain_failure'].includes(state.phase)
+  const terminal = ['sent', 'output_blocked', 'uncertain_failure', 'send_interrupted'].includes(state.phase)
+  const errorMessage = ['error', 'invalidated', 'output_blocked', 'uncertain_failure', 'send_interrupted'].includes(state.phase)
 
   return (
     <section className="egress-panel" aria-labelledby={`${id}-title`} aria-busy={busy}>

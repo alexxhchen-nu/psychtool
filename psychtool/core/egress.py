@@ -47,7 +47,12 @@ def _as_egress_store(target: EgressTarget) -> EgressStore:
     return target
 
 EgressPurpose = Literal["section_generation", "draft_generation", "judge", "eval"]
-EgressStatus = Literal["prepared", "approved", "sent", "invalidated"]
+# ``send_interrupted`` is terminal (ADR 0011): a crash left the send outcome
+# unknown, so the request can never be sent again and a fresh request with a
+# new request_id must be prepared instead.
+EgressStatus = Literal[
+    "prepared", "approved", "sent", "invalidated", "send_interrupted"
+]
 ApprovalMode = Literal["human", "synthetic_auto"]
 EgressEvent = Literal[
     "prepared",

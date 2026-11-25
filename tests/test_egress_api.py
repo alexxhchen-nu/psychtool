@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from psychtool.core.workspace import Passage
 from psychtool.server.app import create_app
 from psychtool.store.sqlite_store import SqliteStore
+from tests.conftest import build_client
 
 
 _ENV_VARS = (
@@ -94,7 +95,7 @@ def test_prepare_returns_review_preview_without_calling_transport(tmp_path, monk
         lambda config, envelope: calls.append((config, envelope)),
     )
 
-    response = _prepare(TestClient(create_app()))
+    response = _prepare(build_client(create_app()))
 
     assert response.status_code == 200
     payload = response.json()
@@ -128,7 +129,7 @@ def test_human_approve_send_and_rebuilt_app_get_persisted_request(
 
     app_module = importlib.import_module("psychtool.server.app")
     monkeypatch.setattr(app_module, "http_transport", transport)
-    client = TestClient(create_app())
+    client = build_client(create_app())
     prepared_response = _prepare(client)
     assert prepared_response.status_code == 200
     prepared = prepared_response.json()
@@ -159,7 +160,7 @@ def test_human_approve_send_and_rebuilt_app_get_persisted_request(
         "messages": [{"role": "user", "content": prepared["preview"]}],
     }
 
-    rebuilt_client = TestClient(create_app())
+    rebuilt_client = build_client(create_app())
     persisted = rebuilt_client.get(request_path)
     assert persisted.status_code == 200
     assert persisted.json()["request_id"] == prepared["request_id"]
@@ -174,7 +175,7 @@ def test_human_approve_send_and_rebuilt_app_get_persisted_request(
 def test_synthetic_auto_approval_uses_server_config(tmp_path, monkeypatch):
     _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path, tier="synthetic")
-    client = TestClient(create_app())
+    client = build_client(create_app())
     prepared = _prepare(client).json()
     request_path = f"/api/workspaces/case-a/egress/{prepared['request_id']}"
 
@@ -199,7 +200,7 @@ def test_synthetic_api_wrong_displayed_hash_rejects_approval_and_send(tmp_path, 
     calls = []
     app_module = importlib.import_module("psychtool.server.app")
     monkeypatch.setattr(app_module, "http_transport", lambda config, envelope: calls.append(envelope))
-    client = TestClient(create_app())
+    client = build_client(create_app())
     prepared = _prepare(client).json()
     request_path = f"/api/workspaces/case-a/egress/{prepared['request_id']}"
 
@@ -220,7 +221,7 @@ def test_synthetic_api_wrong_displayed_hash_rejects_approval_and_send(tmp_path, 
 def test_approve_requires_exactly_one_approval_method(tmp_path, monkeypatch):
     _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
-    client = TestClient(create_app())
+    client = build_client(create_app())
     prepared = _prepare(client).json()
     approve_path = (
         f"/api/workspaces/case-a/egress/{prepared['request_id']}/approve"
@@ -246,7 +247,7 @@ def test_approve_requires_exactly_one_approval_method(tmp_path, monkeypatch):
 def test_safe_errors_do_not_echo_request_or_provider_secrets(tmp_path, monkeypatch):
     _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)
-    client = TestClient(create_app())
+    client = build_client(create_app())
     prepared = _prepare(client).json()
     approve_path = (
         f"/api/workspaces/case-a/egress/{prepared['request_id']}/approve"
@@ -300,7 +301,7 @@ def test_output_pii_is_blocked_without_echoing_provider_body(tmp_path, monkeypat
         "http_transport",
         lambda config, envelope: provider_body,
     )
-    client = TestClient(create_app())
+    client = build_client(create_app())
     prepared = _prepare(client).json()
     request_path = f"/api/workspaces/case-a/egress/{prepared['request_id']}"
     client.post(
@@ -331,7 +332,7 @@ def test_prepare_rejects_caller_controlled_routing_fields(tmp_path, monkeypatch)
         "source_refs": [],
     }
 
-    response = TestClient(create_app()).post(
+    response = build_client(create_app()).post(
         "/api/workspaces/case-a/egress/prepare", json=body
     )
 

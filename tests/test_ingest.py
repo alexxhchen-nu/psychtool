@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from psychtool.core.ingest import parse_upload
 from psychtool.server.app import create_app
 from psychtool.store.sqlite_store import SqliteStore
+from tests.conftest import build_client
 
 
 def test_text_upload_is_local_and_flags_identifiers(tmp_path, monkeypatch):
@@ -10,7 +11,7 @@ def test_text_upload_is_local_and_flags_identifiers(tmp_path, monkeypatch):
     store = SqliteStore(db_path)
     store.create_case("case-a")
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(db_path))
-    response = TestClient(create_app()).post(
+    response = build_client(create_app()).post(
         "/api/workspaces/case-a/materials",
         data={"material_id": "intake", "title": "Intake", "provider": "self", "date": "2026-11-08"},
         files={"file": ("notes.txt", b"Call 312-555-0142.\n\nSleep changed.", "text/plain")},

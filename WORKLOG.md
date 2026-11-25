@@ -145,3 +145,101 @@
 
 - `web/tsconfig.app.tsbuildinfo` 為既有受追蹤的建置產物，build 後有變動（未提交）。
 - Playwright e2e 在沙箱外以 repo 預設設定執行（`bunx playwright install chromium` 後 `bun run e2e`）；沙箱內因無法下載瀏覽器未能以預設設定驗證。
+
+---
+
+## 2026-11-24 14:41 CST — PT-03：本地安全基線與僅附加稽核日誌（S3/S4/S6）
+
+**執行者**：kimi-for-coding via Grok Workhorse
+
+### 變更
+
+- 新增 `psychtool/server/security.py`：每次啟動一組工作階段權杖（顯式參數 → `PSYCHTOOL_SESSION_TOKEN` ≥32 字元 → `secrets.token_urlsafe(32)`），所有 `/api/*`（除 `GET /api/health`）要求 `X-Psychtool-Token`；Host 僅允許 loopback hostname（否則 400）；每個回應帶嚴格 CSP 與 `nosniff`/`no-referrer`/`DENY`；SPA index 注入 `<meta name="psychtool-session">` 且 `Cache-Control: no-store`。權杖值永不進日誌。
+- 新增 `psychtool/server/selfcheck.py`：啟動自檢逐項記錄（bind/token/host-check/csp/data-dir/disk-encryption/audit-chain/send-lock-recovery）；資料庫位於雲端同步資料夾即拒絕啟動（整段路徑元件比對，`Dropboxed-notes` 不誤判）；磁碟加密（FileVault/dm-crypt/BitLocker）僅警告。
+- `psychtool/server/main.py`：僅綁定 loopback，非 loopback 的 `PSYCHTOOL_HOST` 以 exit 2 拒絕啟動；啟動前跑自檢。
+- `psychtool/server/app.py`：接線 middleware 與稽核事件；所有錯誤回應改固定文案（不再回傳 `str(exc)`）。
+- 新增 `psychtool/store/audit.py`：SQLite `audit_log` 表（schema v2），`BEFORE UPDATE/DELETE` trigger 擋修改，`entry_hash` 雜湊鏈（sha256 of canonical JSON）可偵測繞過 trigger 的竄改；writer 結構性拒絕自由文字（action/object_type/destination 白名單、object_id 限識別符形狀含 `-`/`_` 開頭、content_hash 限 64 hex）。
+- 新增 `psychtool/store/recovery.py`：crash 後 fail-closed 復原——外來 boot id 的 send lock：status `sent` 只清鎖；其餘標記終態 `send_interrupted`（永不可再送）；僅 transition lock 陳舊時以 `egress.transition_lock_recovered` 稽核；本 boot 的鎖不動；每列 UPDATE 以觀察到的 owner 為條件（掃描後被改的列跳過）；冪等。
+- Schema v2 遷移：新增 audit_log + triggers，並重建 `egress_requests`（SQLite 無法改 CHECK；`PRAGMA defer_foreign_keys=ON` + 建新表/複製/drop/rename + `PRAGMA foreign_key_check`）。
+- `EgressStatus` 新增終態 `send_interrupted`，貫穿 `types.ts`、`egress-state.ts`（phase/message/validateRecoveredRequest）、`EgressReviewPanel.tsx`（標籤「Send interrupted — prepare a new request」，terminal，不可 send）。
+- 前端 `api.ts` 從 meta tag 讀權杖並附於每個 API 請求；`vite.config.ts` proxy 從 `PSYCHTOOL_SESSION_TOKEN` 注入權杖。
+- 測試：新增 `tests/test_security.py`（36）、`tests/test_selfcheck.py`（37）、`tests/test_audit_log.py`（26，含 token_urlsafe `-`/`_` 開頭 request id 與 v1→v2 重建後 recovery）、`tests/test_send_lock_recovery.py`（7，含 SIGKILL 子进程、sent 後 crash、本 boot 鎖不動、競態跳過、冪等）；`tests/conftest.py` 提供 `build_client`；前端新增 `web/tests/api-session-token.test.ts`（6）與 `egress-state` 的 send_interrupted 測試（5）；e2e 新增 `web/e2e/security.e2e.ts`（CSP 標頭、無 CSP console 錯誤、無權杖 401）。
+- 文件：ADR 0011；三份 README 同步（本地安全基線、開發權杖提示、新測試）。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **428 passed**（連跑 3 次全綠；沙箱 uv cache 唯讀，`uv run --extra dev pytest -q` 無法初始化 cache，以 venv 直跑等價命令）。supervisor 指出的 request id 開頭 `-`/`_` 導致稽核 500 的真 bug 已修（白名單放寬），非 flake。
+- `cd web && bun test` → **110 pass / 0 fail**；`bun run build` → exit 0；`web/dist/index.html` 無內聯 script/style，與嚴格 CSP 相容。
+- 正常啟動的 self-check 輸出（`run_self_checks`，generated 權杖）：
+  - `self-check ok: bind 127.0.0.1`
+  - `self-check ok: session token: generated (not shown)`
+  - `self-check ok: Host header restricted to loopback names`
+  - `self-check ok: strict Content-Security-Policy on all responses`
+  - `self-check ok: data dir is not inside a cloud-sync folder`
+  - `self-check warn: system disk encryption: off (warning only in M1)`（沙箱機無 FileVault/dm-crypt，屬預期警告）
+  - `self-check ok: audit chain verified (0 entries)`
+  - `self-check ok: stale send-lock recovery: 0 recovered`
+- 沙箱外完整指令（`uv run --extra dev pytest -q && cd web && bun install && bun test && bun run build`）與 Playwright e2e：**pending supervisor**（沙箱無法下載瀏覽器）。
+
+### 未解決事項
+
+- Playwright e2e（含新 `security.e2e.ts`）需在沙箱外以 repo 預設設定執行。
+- 稽核鏈防「可被發現的竄改」，不防有檔案權限者 drop trigger 後重算整條鏈（ADR 0011 已聲明）；本專案尚未符合 HIPAA。
+
+---
+
+## 2026-11-24 15:15 CST — PT-03 修正：稽核列與狀態變更同交易（supervisor round 2）
+
+**執行者**：kimi-for-coding → deepseek-flash via Grok Workhorse（Kimi 5 小時配額用盡，HTTP 429，自動 fallback）
+
+### 變更
+
+- **稽核原子性（阻塞項）**：把四個事件從路由層移進 store 層既有交易內。
+  - `claim.accept`：改由 `CaseStore.add_claim` 在插入 claim 的同一交易寫入（content_hash 為 claim.text 的 sha256，永不寫 claim 文字）。
+  - `egress.prepare` / `egress.approve` / `egress.invalidate` / `egress.send`：`CaseStore.save_egress_request` 在交易內先讀該列前一 status，僅在 status 實際變更時寫對應稽核列（同狀態不重複寫），與狀態保存同一交易。
+  - `egress.send` 的 destination：server 在呼叫 `send_approved` 前設 `case.audit_destination = config.transport`（`fake`/`http`）；寫入時仍過白名單。`SqliteGatewayStore` 轉發該屬性。
+  - 新增白名單 action `egress.invalidate`（`AuditAction` + `AUDIT_ACTIONS`）。
+  - JSON store 路徑（`JsonDirStore` / core `save_egress_request`）維持不變，不寫稽核。
+  - 移除路由層 `claim.accept`、`egress.prepare`、`egress.approve`、`egress.send` 的 `append_audit`，以及 send 外層吞錯的 `except Exception`。保留 `egress.output_blocked`（事件非狀態變更），其失敗日誌改固定字串 `logger.error("could not audit blocked model output")`，不再用 `exception()`。
+- **日誌衛生（小項）**：確認 `recovery.py` 無任何 logging（不會外洩例外文字）；`selfcheck.py` 的 `except` 只回傳固定狀態字串（`unknown`/`not-encrypted`），不含例外訊息。
+- **測試**（`tests/test_audit_log.py`）：
+  - `test_claim_accept_and_audit_row_roll_back_together`：注入 `append_audit` 失敗於 claim accept，斷言 claim 與稽核列皆回滾（注入錯誤以 500 回應呈現）。
+  - `test_sent_save_and_audit_row_roll_back_together_fail_closed`：注入 `egress.send` 稽核失敗，斷言 status 仍為 `approved`、無 `egress.send` 列、send 鎖仍持有（fail-closed）；以新 boot id 復原 → `send_interrupted` 且恰一列 `egress.send_lock_recovered`，仍無 `egress.send`。
+  - `test_full_flow_produces_one_audit_row_per_event_in_order`：完整流程恰好一列、依序 `case.create`、`material.import`、`claim.accept`、`egress.prepare`、`egress.approve`、`egress.send`，且 send 列的 destination 為 `fake`、content_hash 相符。
+  - `test_invalidation_writes_audit_row_in_same_transaction`：`invalidate_request` 產生 `egress.invalidate` 列，content_hash 相符。
+- **文件**：ADR 0011 更新為「事件與狀態同一交易」，補上 `egress.invalidate` 與 `audit_destination` 機制。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **432 passed**（連跑 3 次全綠）。
+- `cd web && bun test` → **110 pass / 0 fail**；`bun run build` → 成功。
+- 說明：沙箱 `uv` cache 唯讀，`uv run --extra dev pytest -q` 無法初始化；以 `.venv/bin/python -m pytest -q` 等價執行。
+
+### 未解決事項
+
+- Playwright e2e 仍需沙箱外執行（沙箱無法下載瀏覽器）。
+- 稽核鏈只讓竄改「可被發現」，不防有檔案權限者 drop trigger 後重算整鏈（ADR 0011 已聲明）；本專案尚未符合 HIPAA。
+
+---
+
+## 2026-11-24 15:23 CST — PT-03 supervisor 核驗與修正（沙箱外、全新 clone）
+
+**執行者**：Grok Workhorse supervisor（worker：kimi-for-coding，run 4–6 遇 Kimi 配額 HTTP 429 後自動 fallback 至 deepseek-flash 完成 round 2）
+
+### supervisor 直接修正
+
+- `web/src/App.css`：移除 Google Fonts 遠端 `@import`（被嚴格 CSP 擋下、`security.e2e.ts` 抓到，也違反 S3「無遙測/無外連」）；改為本機字型堆疊。
+- 新增 `tests/test_no_telemetry.py`：掃描 `psychtool/**/*.py` 與 `web/src`（ts/tsx/css/html）及 `web/index.html`，非 loopback 的 http(s) URL 一律失敗。
+- `psychtool/server/main.py`：替 `psychtool` logger 加 INFO handler，啟動日誌才會真的顯示通過的自檢項（原本只看得到 warn 行）；`create_app` 改在雲端同步檢查之後才 import。
+- `psychtool/server/app.py`、`psychtool/server/__init__.py`：模組層 `app` 改為延遲建立，import 不再開啟預設資料庫（同步資料夾會在建立 DB 檔前就被拒）。
+- `psychtool/server/security.py`：權杖以 bytes 比對，非 ASCII 權杖回 401 而非 500；Host 的 port 必須是純數字（`127.0.0.1:80@evil.example` 拒絕）。
+- 新增 `tests/test_startup.py` 與 `test_security.py` 新案例；每項修正都先確認在舊程式上失敗（red）再通過（green）。
+- 修正本檔 PT-03 前兩則的時間（原寫成 UTC 數字）與執行者。
+
+### 實際核驗結果（commit 565e5b2，全新 clone）
+
+- `uv run --extra dev pytest -q` → **440 passed**（連跑 3 次）。
+- `cd web && bun install --frozen-lockfile && bun test` → **110 pass / 0 fail**；`bun run build` → 成功；`bun run e2e` → **3 passed**（case-switch、security、walking-skeleton）。
+- 實機 `uv run psychtool-server`（port 8811/8812）：無權杖、錯誤權杖、非 ASCII 權杖 → 401；`evil.example` 等 Host → 400；正確權杖 → 200；四次啟動的日誌都找不到權杖；稽核列與日誌都找不到標記字串 `ZEBRA-MARKER-7f3a`；直接對 DB 下 `UPDATE`/`DELETE audit_log` → `IntegrityError: audit log is append-only`；`verify_audit_chain` → `(True, 14, None)`。
+- 發送中途當機：http transport 指向本機掛住的假端點，送出後 SIGKILL 伺服器 → 重啟後請求變 `send_interrupted`、鎖清除、寫入一筆 `egress.send_lock_recovered`；再送 → 409；假端點總共只收到 **1** 次請求；再重啟 → `0 recovered`（冪等）。
+- `PSYCHTOOL_HOST=0.0.0.0` → exit 2；資料庫在 `Google Drive` 下 → exit 2。

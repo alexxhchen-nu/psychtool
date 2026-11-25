@@ -10,15 +10,23 @@ Persistence (ADR 0010): all case data lives in one SQLite database
 opens one ``CaseStore`` bound to the URL ``case_id``; the store refuses ids
 that do not pass the shared case-id pattern, and all SQL is parameterized by
 ``case_id`` so one case can never read or mutate another case's rows.
+
+Security (ADR 0011): every request passes the loopback Host check; every
+``/api/*`` call except ``GET /api/health`` needs the per-start session token;
+every response carries strict security headers; the SPA shell is served with
+the token injected as a meta tag and ``Cache-Control: no-store``. Error
+responses use fixed generic strings so user text can never leak through a
+4xx/5xx body.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError
@@ -53,6 +61,11 @@ from psychtool.gateway.client import (
 )
 from psychtool.gateway.fake import fake_transport
 from psychtool.gateway.http import http_transport
+from psychtool.server.security import (
+    LocalSecurityMiddleware,
+    inject_session_meta,
+    resolve_session_token,
+)
 from psychtool.store.sqlite_store import (
     CaseExistsError,
     CaseStore,
@@ -60,6 +73,8 @@ from psychtool.store.sqlite_store import (
     UnknownCaseError,
     default_db_path,
 )
+
+logger = logging.getLogger("psychtool")
 
 # Project root is two levels up from psychtool/server/app.py.
 _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -158,9 +173,16 @@ def _select_transport(config: Config):
     return fake_transport
 
 
-def create_app() -> FastAPI:
+def create_app(session_token: str | None = None) -> FastAPI:
     app = FastAPI(title="psychtool", version=__version__)
+    token, token_source = resolve_session_token(session_token)
+    app.state.session_token = token
+    app.state.session_token_source = token_source
+    # Never log the token value; the startup log names only its origin.
+    logger.info("session token: %s (not shown)", token_source)
     store = SqliteStore(_db_path())
+    app.state.store = store
+    app.add_middleware(LocalSecurityMiddleware, session_token=token)
 
     def _case(case_id: str) -> CaseStore:
         """Bind one case; 400 for malformed ids, 404 for unknown ones."""
@@ -189,7 +211,7 @@ def create_app() -> FastAPI:
         try:
             return manifest_as_dict(load_template(template_id))
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(status_code=404, detail="template not found") from exc
 
     @app.get("/api/workspaces")
     def workspaces() -> list[dict]:
@@ -214,16 +236,20 @@ def create_app() -> FastAPI:
     async def upload_material(case_id: str, file: UploadFile = File(...),
                               material_id: str = Form(...), title: str = Form(...),
                               provider: str = Form(...), date: str = Form(...)) -> dict:
+        case = _case(case_id)
         try:
             data = await file.read(MAX_UPLOAD_BYTES + 1)
             material, findings = import_upload(
-                _case(case_id), filename=file.filename or "", data=data,
+                case, filename=file.filename or "", data=data,
                 material_id=material_id, title=title, provider=provider, date=date,
             )
         except (UnicodeError, KeyError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # Fixed detail: the exception message may quote the uploaded text.
+            raise HTTPException(
+                status_code=400, detail="material could not be imported"
+            ) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail="import unavailable") from exc
         return {"material": material.model_dump(), "identifier_findings": findings,
                 "requires_human_review": True}
 
@@ -262,14 +288,19 @@ def create_app() -> FastAPI:
                 _case(case_id), material_id, provider_role=provider_role
             )]
         except (KeyError, ValueError, ValidationError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # Fixed detail: validation errors may quote pasted source text.
+            raise HTTPException(status_code=400, detail="invalid request") from exc
 
     @app.post("/api/workspaces/{case_id}/claims")
     def accept_claim(case_id: str, body: ClaimSuggestion) -> dict:
+        case = _case(case_id)
         try:
-            return accept_suggestion(_case(case_id), body).model_dump()
+            claim = accept_suggestion(case, body)
         except (KeyError, ValueError, ValidationError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail="invalid claim") from exc
+        # ``claim.accept`` is appended by the store in the same transaction
+        # as the claim insert (ADR 0011).
+        return claim.model_dump()
 
     @app.get("/api/workspaces/{case_id}/names")
     def names(case_id: str) -> dict:
@@ -297,7 +328,8 @@ def create_app() -> FastAPI:
                 reviewer=body.reviewer,
             )
         except (KeyError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # Fixed detail: section errors may quote claim ids or text.
+            raise HTTPException(status_code=400, detail="invalid section") from exc
         return draft.model_dump()
 
     @app.post("/api/workspaces/{case_id}/egress/prepare")
@@ -321,6 +353,8 @@ def create_app() -> FastAPI:
             )
         except (EgressBlockedError, KeyError, ValueError, ValidationError, OSError) as exc:
             raise HTTPException(status_code=400, detail="invalid egress request") from exc
+        # ``egress.prepare`` is appended by the store in the same transaction
+        # as the request row (ADR 0011).
         return _egress_response(request)
 
     @app.get("/api/workspaces/{case_id}/egress/{request_id}")
@@ -368,14 +402,20 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail="egress request state conflict") from exc
         except (ValueError, ValidationError) as exc:
             raise HTTPException(status_code=400, detail="invalid egress request") from exc
+        # ``egress.approve`` is appended by the store in the same transaction
+        # as the approval (ADR 0011).
         return _egress_response(request)
 
     @app.post("/api/workspaces/{case_id}/egress/{request_id}/send")
     def send_egress(case_id: str, request_id: str) -> dict:
         config = load_config()
+        case = _case(case_id)
+        # The store records the transport on the ``egress.send`` audit row it
+        # appends in the same transaction as the ``sent`` status change.
+        case.audit_destination = config.transport
         try:
             text = send_approved(
-                _case(case_id),
+                case,
                 request_id,
                 config=config,
                 transport=_select_transport(config),
@@ -385,6 +425,20 @@ def create_app() -> FastAPI:
         except NetworkForbiddenError as exc:
             raise HTTPException(status_code=403, detail="model network access forbidden") from exc
         except EgressOutputBlockedError as exc:
+            # The request is already ``sent`` at this point (send-once), but
+            # the blocked output is a security-relevant event worth auditing.
+            try:
+                blocked = get_egress_request(case, request_id)
+                case.append_audit(
+                    case_id=case_id,
+                    action="egress.output_blocked",
+                    object_type="egress_request",
+                    object_id=request_id,
+                    content_hash=blocked.content_hash,
+                )
+            except Exception:  # pragma: no cover - audit must not mask the 422
+                # Fixed string only: no exception text may reach the logs.
+                logger.error("could not audit blocked model output")
             raise HTTPException(status_code=422, detail="model output blocked") from exc
         except (EgressStateError, EgressStaleError) as exc:
             raise HTTPException(status_code=409, detail="egress request state conflict") from exc
@@ -392,6 +446,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid egress request") from exc
         except (RuntimeError, OSError) as exc:
             raise HTTPException(status_code=502, detail="model request failed") from exc
+        # ``egress.send`` was appended atomically with the ``sent`` status;
+        # a failed audit write rolls the state change back instead, so the
+        # request can never be ``sent`` without its audit row.
         return {"request_id": request_id, "status": "sent", "text": text}
 
     @app.post("/api/workspaces/{case_id}/sections/{section_id}/generate")
@@ -403,12 +460,17 @@ def create_app() -> FastAPI:
             detail="Direct generation is gone; use egress prepare, approve, and send.",
         )
 
-    _mount_spa(app)
+    _mount_spa(app, token)
     return app
 
 
-def _mount_spa(app: FastAPI) -> None:
-    """Serve the built SPA if ``web/dist`` exists, with SPA fallback."""
+def _mount_spa(app: FastAPI, session_token: str) -> None:
+    """Serve the built SPA if ``web/dist`` exists, with SPA fallback.
+
+    The index shell is rendered per request with the session-token meta tag
+    injected and ``Cache-Control: no-store`` so a cached shell can never
+    carry a stale token. Static assets keep normal caching semantics.
+    """
     dist = _WEB_DIST
     if not (dist / "index.html").is_file():
         return
@@ -417,16 +479,41 @@ def _mount_spa(app: FastAPI) -> None:
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
+    def _index_response() -> HTMLResponse:
+        shell = (dist / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(
+            inject_session_meta(shell, session_token),
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/{full_path:path}", include_in_schema=False)
-    def spa(full_path: str) -> FileResponse:
+    def spa(full_path: str) -> Response:
         # The SPA fallback must never answer API paths: unknown /api/* routes
         # get a JSON 404, not index.html.
         if full_path == "api" or full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
         candidate = dist / full_path
         if full_path and candidate.is_file():
+            if candidate.name == "index.html":
+                return _index_response()
             return FileResponse(candidate)
-        return FileResponse(dist / "index.html")
+        return _index_response()
 
 
-app = create_app()
+
+_default_app: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    """Build the module-level ``app`` on first use, not at import.
+
+    Importing this module must not open the default database: ``main()``
+    runs the cloud-sync data-dir check first (ADR 0011, S4) and only then
+    builds the app. ``uvicorn psychtool.server.app:app`` still works.
+    """
+    global _default_app
+    if name == "app":
+        if _default_app is None:
+            _default_app = create_app()
+        return _default_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
