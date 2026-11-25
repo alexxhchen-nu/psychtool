@@ -117,3 +117,31 @@
 
 - `web/tsconfig.app.tsbuildinfo` 為既有受追蹤的建置產物，每次 build 都會變動（本 PR 未提交其變動）。
 - CLI `psychtool send` 仍直接使用真實 `http_transport`（既有行為，非 PT-01 範圍）。
+
+---
+
+## 2026-11-24 13:36 CST — PT-02：伺服器/瀏覽器儲存切換為 SQLite（個案隔離）
+
+**執行者**：kimi-for-coding via Grok Workhorse
+
+### 變更
+
+- 新增 `psychtool/store/`（`sqlite_store.py` + `importer.py`）：單一 SQLite 資料庫（stdlib `sqlite3`），WAL + `synchronous=FULL` + `foreign_keys=ON`，`PRAGMA user_version` 管理 schema；全部實體以 `case_id` 開頭的複合主鍵，claims→passages 複合外鍵在資料庫層拒絕跨案引用；egress 請求行內鎖列（owner 校驗釋放）。
+- 共享出閘安全層 `psychtool/core/egress_store.py`（`EgressStore` 協定 + `JsonDirStore` + `SqliteGatewayStore`），egress/gateway/review/intake/sections/draft 全部 store-aware，安全邏輯不分叉；JSON 工作區仍是 CLI/評測鏈路格式。
+- `psychtool/server/app.py` 全面改用 `SqliteStore`（`PSYCHTOOL_DB_PATH`，預設 `local-data/psychtool.db`）；`_case()` 綁定器（400/404/409）；`_mount_spa` 的 SPA 回退不再應答 `/api/*`（未知 API 路徑回 JSON 404）。
+- 新增 `import-json <dir> [--db PATH]` CLI；新增合成範例 `fixtures/case_a001/`（5 份材料，m3 含跳脫引號）。
+- 測試：`tests/test_sqlite_store.py`（28）、`tests/test_case_isolation.py`（19，含跨案洩漏與敵意 id）、`tests/test_store_durability.py`（2：SIGKILL 掉電 + 雙實例持久化）、`tests/test_import_json.py`（5）、`tests/test_spa_fallback.py`（5）；六份既有 API 測試改以 `PSYCHTOOL_DB_PATH` 播種。
+- `web/playwright.config.ts` 每次執行用全新暫存資料庫（`mkdtempSync` + `PSYCHTOOL_DB_PATH`），釘死 `PSYCHTOOL_TRANSPORT=fake`、`PSYCHTOOL_DATA_TIER=synthetic`。新增 `web/e2e/case-switch.e2e.ts`（R1-AC2：切換個案只見本个案材料與證據）。
+- 文件：ADR 0010（取代 ADR 0005 於應用儲存）；ADR 0005 加取代註記；三份 README 同步（資料庫位置、`PSYCHTOOL_DB_PATH`、`import-json`）。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **320 passed**（沙箱 uv cache 唯讀，`uv run --extra dev pytest -q` 無法初始化 cache，以 venv 直跑等價命令）。supervisor 複審後補三項（import-json 預設走 `default_db_path()`、importer 拒絕非 synthetic data_tier、新增確定性 mid-transaction SIGKILL 測試），再跑 → **323 passed**。
+- `cd web && bun install --frozen-lockfile` → exit 0；`bun test` → **99 pass / 0 fail**；`bun run build` → exit 0。
+- `cd web && bunx playwright test` → **2 passed**（case-switch + walking-skeleton；沙箱無法下載 Playwright 瀏覽器，本次以臨時本機 Chromium 設定執行，正式驗證以 repo 預設的 Playwright 瀏覽器為準）。
+- 沙箱外完整指令（`uv run --extra dev pytest -q && cd web && bun install --frozen-lockfile && bun test && bun run build`）：**pending supervisor**。
+
+### 未解決事項
+
+- `web/tsconfig.app.tsbuildinfo` 為既有受追蹤的建置產物，build 後有變動（未提交）。
+- Playwright e2e 在沙箱外以 repo 預設設定執行（`bunx playwright install chromium` 後 `bun run e2e`）；沙箱內因無法下載瀏覽器未能以預設設定驗證。

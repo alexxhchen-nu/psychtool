@@ -3,15 +3,19 @@
 Only a persisted, approved :class:`EgressRequest` may reach a transport. The
 approved envelope is passed through unchanged, and the injected transport keeps
 unit tests off the network.
+
+Persistence goes through the egress store protocol so the approval-hash check,
+send-once guarantee, data-tier/network refusal, stale-source invalidation and
+output PII gate run exactly once for both the JSON workspace directory and the
+SQLite case store.
 """
 
 from __future__ import annotations
 
-import os
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Union
 from urllib.parse import urlparse
 
 from psychtool.config import Config
@@ -19,13 +23,19 @@ from psychtool.core.egress import (
     EgressRequest,
     EgressStaleError,
     EgressStateError,
-    _egress_dir,
+    _as_egress_store,
     _invalidate_request_locked,
     _request_transition_lock,
     _validate_request_id,
     canonical_hash,
     get_egress_request,
     save_egress_request,
+)
+from psychtool.core.egress_store import (
+    EgressStore,
+    JsonDirStore,
+    egress_send_lock,
+    egress_send_unlock,
 )
 from psychtool.core.redact import gate_pii
 from psychtool.core.review import validate_source_refs
@@ -58,11 +68,15 @@ def _is_local(url: str) -> bool:
 
 
 def _send_lock_path(workspace: Path, request_id: str) -> Path:
+    """Legacy JSON-workspace send-lock path (kept for on-disk compatibility)."""
+    from psychtool.core.egress import _egress_dir
+
     request_id = _validate_request_id(request_id)
     return _egress_dir(Path(workspace)) / f"{request_id}.send.lock"
 
 
 def _remove_owned_send_lock(lock_path: Path, owner: str) -> None:
+    """Legacy JSON-workspace helper kept importable for existing tests."""
     try:
         current_owner = lock_path.read_text(encoding="ascii")
     except (FileNotFoundError, OSError, UnicodeError):
@@ -74,27 +88,10 @@ def _remove_owned_send_lock(lock_path: Path, owner: str) -> None:
             pass
 
 
-def _acquire_send_lock(workspace: Path, request_id: str) -> tuple[Path, str]:
-    lock_path = _send_lock_path(workspace, request_id)
-    owner = secrets.token_hex(32)
-    try:
-        descriptor = os.open(
-            lock_path,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-            0o600,
-        )
-    except FileExistsError:
-        raise EgressStateError("egress request send is locked") from None
-
-    try:
-        with os.fdopen(descriptor, mode="w", encoding="ascii") as lock_file:
-            lock_file.write(owner)
-            lock_file.flush()
-            os.fsync(lock_file.fileno())
-    except BaseException:
-        _remove_owned_send_lock(lock_path, owner)
-        raise
-    return lock_path, owner
+def _acquire_send_lock(store: EgressStore, request_id: str) -> str:
+    """Take the send-once lock through the store; returns the lock owner."""
+    _lock_key, owner = egress_send_lock(store, request_id)
+    return owner
 
 
 def _validate_approved_state(request: EgressRequest) -> None:
@@ -130,7 +127,7 @@ def _validate_routing(request: EgressRequest, config: Config) -> None:
 
 
 def send_approved(
-    workspace: Path,
+    workspace: Union[Path, str, EgressStore],
     request_id: str,
     *,
     config: Config,
@@ -139,19 +136,20 @@ def send_approved(
     """Send one persisted approved envelope exactly once.
 
     Lock order is always send lock followed by request transition lock. The
-    transition lock remains held through transport completion and atomic
-    persistence of the ``sent`` state.
+    transition lock remains held through transport completion and persistence
+    of the ``sent`` state.
     """
-    lock_path, owner = _acquire_send_lock(Path(workspace), request_id)
+    store = _as_egress_store(workspace)
+    owner = _acquire_send_lock(store, request_id)
     phase = "validation"
     try:
-        with _request_transition_lock(workspace, request_id):
-            request = get_egress_request(workspace, request_id)
+        with _request_transition_lock(store, request_id):
+            request = get_egress_request(store, request_id)
             _validate_approved_state(request)
             try:
-                validate_source_refs(workspace, request.source_refs)
+                validate_source_refs(store, request.source_refs)
             except EgressStaleError:
-                _invalidate_request_locked(workspace, request_id)
+                _invalidate_request_locked(store, request_id)
                 raise
             _validate_routing(request, config)
 
@@ -165,19 +163,23 @@ def send_approved(
                     "sent_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
-            save_egress_request(workspace, sent)
+            save_egress_request(store, sent)
             phase = "sent"
     except Exception:
         if phase == "validation":
-            _remove_owned_send_lock(lock_path, owner)
+            egress_send_unlock(store, request_id, owner)
         # A transport error can follow delivery; keep the lock to prevent replay.
         if phase == "transport":
             raise RuntimeError("model transport failed") from None
         raise
 
-    findings = gate_pii(response, known_names=get_known_names(workspace))
+    if isinstance(store, JsonDirStore):
+        known_names = get_known_names(store.workspace)
+    else:
+        known_names = store.get_known_names()
+    findings = gate_pii(response, known_names=known_names)
     categories = sorted({finding["category"] for finding in findings})
-    _remove_owned_send_lock(lock_path, owner)
+    egress_send_unlock(store, request_id, owner)
     if categories:
         raise EgressOutputBlockedError(categories)
     return response

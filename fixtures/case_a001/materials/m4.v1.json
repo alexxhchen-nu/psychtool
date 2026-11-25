@@ -1,0 +1,14 @@
+{
+  "id": "m4",
+  "case_id": "case-a001",
+  "version": 1,
+  "title": "Synthetic activity log",
+  "provider": "synthetic author A",
+  "date": "2026-10-19",
+  "passages": [
+    {
+      "id": "p001",
+      "text": "The participant logged chess club attendance for four of four scheduled meetings in October."
+    }
+  ]
+}

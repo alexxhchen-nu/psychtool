@@ -123,10 +123,17 @@ def _drafts_dir(workspace: Path) -> Path:
     return workspace / DRAFTS_DIR
 
 
-def select_claims(workspace: Path, claim_ids: list[str]) -> list[Claim]:
-    from psychtool.core.claims import get_claim, list_claims
+def _is_case_store(target: object) -> bool:
+    return not isinstance(target, (str, Path))
 
-    available = {c.id: c for c in list_claims(workspace)}
+
+def select_claims(workspace: Path, claim_ids: list[str]) -> list[Claim]:
+    from psychtool.core.claims import list_claims
+
+    if _is_case_store(workspace):
+        available = {c.id: c for c in workspace.list_claims()}
+    else:
+        available = {c.id: c for c in list_claims(Path(workspace))}
     missing = [cid for cid in claim_ids if cid not in available]
     if missing:
         raise KeyError(f"claims not in workspace: {missing}")

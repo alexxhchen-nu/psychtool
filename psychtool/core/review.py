@@ -9,48 +9,71 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from psychtool.core.egress_store import JsonDirStore
 from psychtool.core.workspace import latest_version
 from psychtool.core.claims import Claim, get_claim, list_claims, mark_status
 from psychtool.core.draft import list_drafts, load_draft
 from psychtool.core.egress import (
     EgressStaleError,
+    EgressTarget,
     SourceRef,
+    _as_egress_store,
     _invalidate_request_locked,
     _request_transition_lock,
     get_egress_request,
 )
 
 
-def validate_source_refs(workspace: Path, refs: list[SourceRef]) -> None:
+def _latest_material_version(target: EgressTarget, material_id: str) -> int:
+    store = _as_egress_store(target)
+    if isinstance(store, JsonDirStore):
+        return latest_version(store.workspace, material_id)
+    return store.latest_material_version(material_id)  # type: ignore[attr-defined]
+
+
+def _get_claim(target: EgressTarget, claim_id: str) -> Claim:
+    store = _as_egress_store(target)
+    if isinstance(store, JsonDirStore):
+        return get_claim(store.workspace, claim_id)
+    return store.get_claim(claim_id)  # type: ignore[attr-defined]
+
+
+def _load_draft(target: EgressTarget, draft_id: str):
+    store = _as_egress_store(target)
+    if isinstance(store, JsonDirStore):
+        return load_draft(store.workspace, draft_id)
+    return store.get_draft(draft_id)  # type: ignore[attr-defined]
+
+
+def validate_source_refs(target: EgressTarget, refs: list[SourceRef]) -> None:
     """Raise when any source reference is missing or no longer the latest version."""
-    workspace = Path(workspace)
     for ref in refs:
         try:
             if ref.kind == "claim":
-                claim = get_claim(workspace, ref.id)
+                claim = _get_claim(target, ref.id)
                 current_version = claim.version
             elif ref.kind == "material":
-                current_version = latest_version(workspace, ref.id)
+                current_version = _latest_material_version(target, ref.id)
             else:
-                current_version = load_draft(workspace, ref.id).version
+                current_version = _load_draft(target, ref.id).version
         except (FileNotFoundError, KeyError):
             raise EgressStaleError("egress source reference is stale") from None
         if current_version == 0 or current_version != ref.version:
             raise EgressStaleError("egress source reference is stale")
         if ref.kind == "claim":
-            material_version = latest_version(workspace, claim.source_document_id)
+            material_version = _latest_material_version(target, claim.source_document_id)
             if material_version == 0 or material_version != claim.source_version:
                 raise EgressStaleError("egress source reference is stale")
 
 
-def validate_request_sources(workspace: Path, request_id: str) -> None:
+def validate_request_sources(target: EgressTarget, request_id: str) -> None:
     """Validate a persisted request's sources, invalidating it on failure."""
-    with _request_transition_lock(workspace, request_id):
-        request = get_egress_request(workspace, request_id)
+    with _request_transition_lock(target, request_id):
+        request = get_egress_request(target, request_id)
         try:
-            validate_source_refs(workspace, request.source_refs)
+            validate_source_refs(target, request.source_refs)
         except EgressStaleError:
-            _invalidate_request_locked(workspace, request_id)
+            _invalidate_request_locked(target, request_id)
             raise
 
 

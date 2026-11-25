@@ -5,10 +5,11 @@ import { join } from 'node:path'
 
 // One full-path e2e against the real backend serving the built SPA.
 // The webServer below starts `uv run psychtool-server` (uvicorn on
-// 127.0.0.1:8000) against a fresh temp workspaces dir; the server defaults to
-// the offline FakeTransport, so no API key or network access is needed.
+// 127.0.0.1:8000) against a fresh temp SQLite database; the server defaults
+// to the offline FakeTransport, so no API key or network access is needed.
 
-const workspacesDir = mkdtempSync(join(tmpdir(), 'psychtool-e2e-'))
+const tempDir = mkdtempSync(join(tmpdir(), 'psychtool-e2e-'))
+const dbPath = join(tempDir, 'psychtool.db')
 
 export default defineConfig({
   testDir: './e2e',
@@ -36,7 +37,7 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 120_000,
     env: {
-      PSYCHTOOL_WORKSPACES_DIR: workspacesDir,
+      PSYCHTOOL_DB_PATH: dbPath,
       // Playwright merges process.env into the webServer, so pin these to
       // keep a developer shell with PSYCHTOOL_TRANSPORT=http from making the
       // e2e touch the network.

@@ -1,0 +1,18 @@
+{
+  "id": "m5",
+  "case_id": "case-a001",
+  "version": 1,
+  "title": "Synthetic follow-up summary",
+  "provider": "synthetic author D",
+  "date": "2026-10-26",
+  "passages": [
+    {
+      "id": "p001",
+      "text": "The synthetic summary lists two open questions: the disputed breakfast frequency and the unmeasured movement episodes."
+    },
+    {
+      "id": "p002",
+      "text": "No score, diagnosis, or normative comparison appears anywhere in this synthetic case file."
+    }
+  ]
+}
