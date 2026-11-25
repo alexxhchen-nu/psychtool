@@ -363,3 +363,65 @@ def test_correction_survives_refresh(client):
     assert again["id"] == weather["id"]  # stable id
     assert again["category"] == "other"
     assert again["category_set_by"] == "clinician"
+
+
+# -- G-Stack review additions (supervisor) --------------------------------------
+
+
+def test_import_survives_failed_auto_extraction(client, monkeypatch, caplog):
+    """A failing auto-extraction must not undo the import (ADR 0015)."""
+    from psychtool.store.sqlite_store import CaseStore
+
+    original = CaseStore.refresh_evidence
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(CaseStore, "refresh_evidence", boom)
+    with caplog.at_level("ERROR", logger="psychtool"):
+        _upload(client, "case-a", "school", TEACHER_MD, "School note")
+    materials = client.get("/api/workspaces/case-a/materials").json()
+    assert [m["id"] for m in materials] == ["school"]
+    payload = _evidence(client)
+    assert payload["needs_extraction"] is True
+    assert payload["items"] == []
+    assert "RuntimeError" in caplog.text
+    assert "reads slowly" not in caplog.text and "weather" not in caplog.text
+
+    monkeypatch.setattr(CaseStore, "refresh_evidence", original)
+    assert client.post("/api/workspaces/case-a/evidence/refresh").status_code == 200
+    payload = _evidence(client)
+    assert payload["needs_extraction"] is False
+    assert len(payload["items"]) == 2
+
+
+def test_refresh_route_reports_dropped(client, monkeypatch):
+    """A candidate whose quote is not verbatim in its passage is dropped and counted."""
+    from psychtool.core import extract as extract_module
+    from psychtool.core.extract import EvidenceCandidate, RuleExtractor
+    from psychtool.core.spans import Span
+    from psychtool.server import app as app_module
+
+    _upload(client, "case-a", "school", TEACHER_MD, "School note")
+
+    class ForgingExtractor(RuleExtractor):
+        def extract(self, material):
+            candidates = super().extract(material)
+            passage = material.passages[0]
+            candidates.append(
+                EvidenceCandidate(
+                    id="forged",
+                    quote="He never reads at all",
+                    span=Span(material_id=material.id, material_version=material.version,
+                              passage_id=passage.id, start=0, end=21),
+                    paragraph=1,
+                )
+            )
+            return candidates
+
+    monkeypatch.setattr(app_module, "RuleExtractor", ForgingExtractor)
+    assert extract_module.RuleExtractor is RuleExtractor  # only the route's binding changes
+    response = client.post("/api/workspaces/case-a/evidence/refresh")
+    assert response.status_code == 200, response.text
+    assert response.json()["dropped"] == 1
+    assert all("never reads" not in item["quote"] for item in _evidence(client)["items"])

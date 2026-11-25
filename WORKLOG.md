@@ -402,3 +402,7 @@
   - bad key / extra field → 400; cross-case or unknown id → 404;
   - GET writes nothing; refresh with no change writes no audit row; audit rows hold ids and counts only, no text; case B text is not in case A; no material text in the log;
   - a 4.9 MB, 80,000-paragraph upload took 7.8 s including extraction, and GET returned 80,000 items in 1.9 s.
+- G-Stack review additions (supervisor, written directly because the Workhorse MCP was unavailable after a box restart):
+  - `test_import_survives_failed_auto_extraction`: a failed auto-extraction keeps the material; the log holds only the exception type; a later refresh recovers.
+  - `test_refresh_route_reports_dropped`: a forged non-verbatim candidate is counted as dropped and not stored.
+  - Each test was confirmed red under its mutation (try/except removed; `dropped` forced to 0).

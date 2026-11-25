@@ -180,7 +180,7 @@ def _refresh_evidence_after_import(case: CaseStore, material_id: str) -> None:
     """
     try:
         case.refresh_evidence(RuleExtractor(), material_ids={material_id})
-    except Exception as exc:  # pragma: no cover - defensive; store is local
+    except Exception as exc:  # covered by test_import_survives_failed_auto_extraction
         logger.error("evidence refresh after import failed: %s", type(exc).__name__)
 
 
