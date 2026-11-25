@@ -33,7 +33,12 @@ from pydantic import ValidationError
 
 from psychtool import __version__
 from psychtool.core.intake_claims import ClaimSuggestion, accept_suggestion, suggest_claims
-from psychtool.core.ingest import import_upload, MAX_UPLOAD_BYTES
+from psychtool.core.ingest import (
+    MAX_UPLOAD_BYTES,
+    ServerUploadError,
+    import_upload,
+    parse_server_upload,
+)
 from psychtool.core.egress import (
     EgressApprovalError,
     EgressBlockedError,
@@ -63,6 +68,7 @@ from psychtool.gateway.fake import fake_transport
 from psychtool.gateway.http import http_transport
 from psychtool.server.security import (
     LocalSecurityMiddleware,
+    SecurityHeadersASGIMiddleware,
     inject_session_meta,
     resolve_session_token,
 )
@@ -173,6 +179,23 @@ def _select_transport(config: Config):
     return fake_transport
 
 
+def _wrap_stack_with_security_headers(app: FastAPI) -> None:
+    """Ensure the outermost middleware is SecurityHeadersASGIMiddleware.
+
+    Starlette always puts ``ServerErrorMiddleware`` first (outside user
+    middleware), and it sends its 500 response via the original ``send`` —
+    so headers injected by any ``add_middleware`` middleware are missing from
+    that response. Wrapping the built stack places header injection truly
+    outermost, covering the fixed 500 as well as every normal response.
+    """
+    original_build = app.build_middleware_stack
+
+    def build() -> object:
+        return SecurityHeadersASGIMiddleware(original_build())
+
+    app.build_middleware_stack = build  # type: ignore[method-assign]
+
+
 def create_app(session_token: str | None = None) -> FastAPI:
     app = FastAPI(title="psychtool", version=__version__)
     token, token_source = resolve_session_token(session_token)
@@ -183,6 +206,12 @@ def create_app(session_token: str | None = None) -> FastAPI:
     store = SqliteStore(_db_path())
     app.state.store = store
     app.add_middleware(LocalSecurityMiddleware, session_token=token)
+    # Wrap the *built* stack (outside Starlette's ServerErrorMiddleware) so
+    # the fixed 500 it sends for an unhandled exception also carries the
+    # PT-03 security headers (ADR 0012). ``add_middleware`` cannot do this:
+    # user middleware always sits *inside* ServerErrorMiddleware, whose error
+    # response is sent via the original ``send``.
+    _wrap_stack_with_security_headers(app)
 
     def _case(case_id: str) -> CaseStore:
         """Bind one case; 400 for malformed ids, 404 for unknown ones."""
@@ -197,6 +226,19 @@ def create_app(session_token: str | None = None) -> FastAPI:
     async def request_validation_error(request, exc) -> JSONResponse:
         _ = request, exc
         return JSONResponse(status_code=400, content={"detail": "invalid request"})
+
+    @app.exception_handler(Exception)
+    async def unhandled_error(request, exc) -> JSONResponse:
+        """Catch-all (ADR 0012): fixed body, log the exception *type* only.
+
+        ``str(exc)`` and tracebacks may quote request or material text, so
+        only the class name is logged, exactly once, here. The response body
+        is a fixed string; the security headers are attached by
+        SecurityHeadersASGIMiddleware, which wraps the outermost stack.
+        """
+        _ = request
+        logger.error("unhandled error: %s", type(exc).__name__)
+        return JSONResponse(status_code=500, content={"detail": "internal error"})
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -228,6 +270,26 @@ def create_app(session_token: str | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="case already exists") from exc
         return {"case_id": case_id}
 
+    @app.post("/api/workspaces/{case_id}/synthetic-confirmation")
+    def confirm_synthetic(case_id: str) -> dict:
+        """Record the R2-AC3 first-upload confirmation (idempotent, ADR 0012).
+
+        The audit row is written only when the confirmation actually changes
+        the case, so calling this twice appends exactly one
+        ``case.confirm_synthetic`` row.
+        """
+        case = _case(case_id)
+        case.confirm_synthetic()  # audit row written in the same transaction
+        return {"case_id": case_id, "synthetic_confirmed": True}
+
+    @app.get("/api/workspaces/{case_id}")
+    def workspace(case_id: str) -> dict:
+        case = _case(case_id)
+        return {
+            "case_id": case_id,
+            "synthetic_confirmed": case.is_synthetic_confirmed(),
+        }
+
     @app.get("/api/workspaces/{case_id}/materials")
     def materials(case_id: str) -> list[dict]:
         return [m.model_dump() for m in _case(case_id).list_materials()]
@@ -237,8 +299,29 @@ def create_app(session_token: str | None = None) -> FastAPI:
                               material_id: str = Form(...), title: str = Form(...),
                               provider: str = Form(...), date: str = Form(...)) -> dict:
         case = _case(case_id)
+        # R2-AC3: no upload before the per-case synthetic confirmation.
+        if not case.is_synthetic_confirmed():
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "Confirm that this case uses only synthetic or "
+                              "separately approved materials before uploading.",
+                    "reason": "confirmation_required",
+                },
+            )
+        # Everything is validated before the store is touched; the store
+        # write itself (material + passages + audit row) is one transaction,
+        # so a rejection can never leave a partial write behind.
+        data = await file.read(MAX_UPLOAD_BYTES + 1)
         try:
-            data = await file.read(MAX_UPLOAD_BYTES + 1)
+            text = parse_server_upload(file.filename or "", data)
+        except ServerUploadError as exc:
+            status = 413 if exc.reason == "too_large" else 400
+            return JSONResponse(
+                status_code=status,
+                content={"detail": str(exc), "reason": exc.reason},
+            )
+        try:
             material, findings = import_upload(
                 case, filename=file.filename or "", data=data,
                 material_id=material_id, title=title, provider=provider, date=date,
@@ -274,6 +357,10 @@ def create_app(session_token: str | None = None) -> FastAPI:
             ) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail="paste import unavailable") from exc
+        # A confirmed paste is itself the R2-AC3 confirmation: recording it
+        # here means the file form stops asking once any material was
+        # confirmed as synthetic (ADR 0012). One audit row, set-once.
+        case.confirm_synthetic()  # audit row written in the same transaction
         return {"material": material.model_dump(), "identifier_findings": findings,
                 "requires_human_review": True}
 

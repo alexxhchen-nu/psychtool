@@ -27,6 +27,7 @@ import os
 import re
 import secrets
 
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -123,10 +124,38 @@ class LocalSecurityMiddleware(BaseHTTPMiddleware):
                     status_code=401,
                     headers=SECURITY_HEADERS,
                 )
-        response = await call_next(request)
-        for name, value in SECURITY_HEADERS.items():
-            response.headers[name] = value
-        return response
+        # Security headers are set by SecurityHeadersASGIMiddleware, which
+        # also covers the fixed 500 sent by ServerErrorMiddleware.
+        return await call_next(request)
+
+
+class SecurityHeadersASGIMiddleware:
+    """Pure-ASGI header injection that also covers error responses.
+
+    Registered as the outermost middleware (before ``ServerErrorMiddleware``
+    is appended by Starlette), so it wraps ``send`` for *every* response —
+    including the fixed 500 that ``ServerErrorMiddleware`` renders when an
+    exception escapes the app. ``BaseHTTPMiddleware`` cannot do this: on an
+    unhandled exception ``call_next`` raises and the error response is sent
+    by the outer layer, bypassing ``dispatch``'s return path.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(raw=message.setdefault("headers", []))
+                for name, value in SECURITY_HEADERS.items():
+                    headers[name] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 
 def inject_session_meta(index_html: str, session_token: str) -> str:

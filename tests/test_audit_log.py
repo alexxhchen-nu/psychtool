@@ -9,11 +9,12 @@ import sqlite3
 import pytest
 
 from psychtool.store.audit import (
+    AUDIT_ACTIONS,
     GENESIS_PREV_HASH,
     append_audit,
     verify_audit_chain,
 )
-from psychtool.store.sqlite_store import SqliteStore
+from psychtool.store.sqlite_store import _SCHEMA_VERSION, SqliteStore
 
 MARKER = "ZEBRA-MARKER-7f3a"
 
@@ -370,7 +371,7 @@ def test_v1_database_migrates_to_v2(tmp_path):
 
     store = SqliteStore(db)
     connection = store._connect()
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
     # Old data intact.
     row = connection.execute(
         "SELECT data_tier FROM cases WHERE case_id = 'case-old'"
@@ -417,7 +418,7 @@ def test_v1_migration_rebuilds_egress_requests_and_recovery_works(tmp_path):
 
     store = SqliteStore(db)
     connection = store._connect()
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
     # Row copied with all fields intact.
     row = connection.execute(
         "SELECT status, send_lock_owner FROM egress_requests"
@@ -445,6 +446,60 @@ def test_v1_migration_rebuilds_egress_requests_and_recovery_works(tmp_path):
     ]
     assert len(audit) == 1
     assert audit[0]["object_id"] == "req-locked"
+    assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_v2_database_migrates_to_v3_with_confirmation_column(tmp_path):
+    """A PT-03 v2 database opens, gains ``cases.synthetic_confirmed_at``,
+    keeps every existing row and its audit chain, and an existing case starts
+    unconfirmed (NULL) so the R2-AC3 gate applies to pre-upgrade cases too."""
+    db = tmp_path / "psychtool.db"
+    # Build a genuine v2 database: run the v1 fixture, then apply only the
+    # v2 migration statements and set user_version=2.
+    from psychtool.store.sqlite_store import _MIGRATION_STATEMENTS
+
+    _build_v1_database(db)
+    raw = sqlite3.connect(db)
+    raw.row_factory = sqlite3.Row
+    for statement in _MIGRATION_STATEMENTS[2]:
+        raw.execute(statement)
+    raw.execute("PRAGMA user_version = 2")
+    append_audit(
+        raw,
+        case_id="case-old",
+        action="case.create",
+        object_type="case",
+        object_id="case-old",
+    )
+    raw.commit()
+    raw.close()
+
+    store = SqliteStore(db)
+    connection = store._connect()
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(cases)").fetchall()
+    }
+    assert "synthetic_confirmed_at" in columns
+    # Existing row intact, confirmation starts unset.
+    row = connection.execute(
+        "SELECT data_tier, synthetic_confirmed_at FROM cases"
+        " WHERE case_id = 'case-old'"
+    ).fetchone()
+    assert row["data_tier"] == "synthetic"
+    assert row["synthetic_confirmed_at"] is None
+    case = store.case("case-old")
+    assert case.is_synthetic_confirmed() is False
+    assert case.confirm_synthetic() is True
+    assert case.is_synthetic_confirmed() is True
+    # The audit chain is intact across the migration: the one v2 row plus
+    # the confirmation row the store appends in the same transaction.
+    ok, count, bad = verify_audit_chain(store)
+    assert (ok, count, bad) == (True, 2, None)
+    last = connection.execute(
+        "SELECT action, object_type, object_id FROM audit_log ORDER BY seq DESC LIMIT 1"
+    ).fetchone()
+    assert tuple(last) == ("case.confirm_synthetic", "case", "case-old")
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
@@ -648,8 +703,9 @@ def test_sent_save_and_audit_row_roll_back_together_fail_closed(tmp_path, monkey
 
 
 def test_full_flow_produces_one_audit_row_per_event_in_order(tmp_path, monkeypatch):
-    """case.create, material.import, claim.accept, egress.prepare,
-    egress.approve, egress.send — exactly once each, in order."""
+    """case.create, material.import, case.confirm_synthetic (from the paste
+    body), claim.accept, egress.prepare, egress.approve, egress.send —
+    exactly once each, in order."""
     import importlib
 
     from fastapi.testclient import TestClient
@@ -694,6 +750,7 @@ def test_full_flow_produces_one_audit_row_per_event_in_order(tmp_path, monkeypat
     assert _audit_actions(db) == [
         "case.create",
         "material.import",
+        "case.confirm_synthetic",
         "claim.accept",
         "egress.prepare",
         "egress.approve",

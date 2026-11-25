@@ -1,4 +1,14 @@
-"""Local-only document parsing before material import or model access."""
+"""Local-only document parsing before material import or model access.
+
+Two entry points:
+
+- :func:`parse_upload` — the CLI path, which may run local Indra OCR for
+  PDF/images (unchanged since ADR 0005-era ingest);
+- :func:`parse_server_upload` — the server/browser path (ADR 0012), which
+  accepts only UTF-8 ``.txt``/``.md`` and rejects everything else with a
+  fixed ``(reason, message)`` pair. It never runs OCR and its messages never
+  quote the filename or the content.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +26,53 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 TEXT_SUFFIXES = {".txt", ".md"}
 OCR_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg"}
+
+# Fixed rejection vocabulary for the server upload path (ADR 0012). Every
+# message is a constant: nothing user-supplied may ever be echoed back.
+SCAN_NOT_SUPPORTED_MESSAGE = (
+    "Scanned PDFs and images are not supported in this version. "
+    "Upload a .txt or .md file."
+)
+SERVER_UPLOAD_MESSAGES = {
+    "too_large": "The file is too large. The limit is 10 MiB (10,485,760 bytes).",
+    "unsupported_type": "Only .txt and .md files are supported. Upload a .txt or .md file.",
+    "scan_not_supported": SCAN_NOT_SUPPORTED_MESSAGE,
+    "not_utf8": "The file is not valid UTF-8 text. Save it as UTF-8 and try again.",
+    "empty": "The file contains no text.",
+}
+SCAN_SUFFIXES = OCR_SUFFIXES  # R12: scans/images rejected on the server, no OCR
+
+
+class ServerUploadError(ValueError):
+    """A server upload rejection: an allowlisted ``reason`` plus fixed text."""
+
+    def __init__(self, reason: str) -> None:
+        if reason not in SERVER_UPLOAD_MESSAGES:
+            raise ValueError(f"unknown server upload reason: {reason!r}")
+        self.reason = reason
+        super().__init__(SERVER_UPLOAD_MESSAGES[reason])
+
+
+def parse_server_upload(filename: str, data: bytes) -> str:
+    """Decode one browser upload under the M1 server rules (ADR 0012).
+
+    Only ``.txt``/``.md`` (UTF-8, optional BOM) pass; every other input is
+    rejected before any store write. This function never invokes OCR.
+    """
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ServerUploadError("too_large")
+    suffix = Path(filename).suffix.lower()
+    if suffix in SCAN_SUFFIXES:
+        raise ServerUploadError("scan_not_supported")
+    if suffix not in TEXT_SUFFIXES:
+        raise ServerUploadError("unsupported_type")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ServerUploadError("not_utf8") from None
+    if not text.strip():
+        raise ServerUploadError("empty")
+    return text
 
 # A paste/upload target: a legacy JSON workspace directory, or one case bound
 # inside the SQLite store (``psychtool.store.sqlite_store.CaseStore``).

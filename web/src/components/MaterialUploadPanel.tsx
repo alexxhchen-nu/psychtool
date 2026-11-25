@@ -1,18 +1,23 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { uploadMaterial } from '../api'
+import { confirmSynthetic, uploadMaterial } from '../api'
 import type { UploadResult } from '../types'
 import { summarizeUpload, UPLOAD_ACCEPT, uploadErrorMessage, validateMaterialUpload } from '../upload'
 import type { UploadFieldErrors, UploadSummary } from '../upload'
 
+export const SYNTHETIC_NOTICE =
+  'This tool is not for real client data. Before the first upload, confirm that this case uses only synthetic or separately approved materials.'
+
 interface MaterialUploadPanelProps {
   workspaceId: string
+  confirmed: boolean
+  onConfirmed: () => void
   onUploaded: (result: UploadResult) => void | Promise<void>
   onReview: (materialId: string) => void
   onBusyChange: (busy: boolean) => void
 }
 
-export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview, onBusyChange }: MaterialUploadPanelProps) {
+export default function MaterialUploadPanel({ workspaceId, confirmed, onConfirmed, onUploaded, onReview, onBusyChange }: MaterialUploadPanelProps) {
   const id = useId()
   const [file, setFile] = useState<File | null>(null)
   const [materialId, setMaterialId] = useState('')
@@ -23,6 +28,9 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
   const [error, setError] = useState('')
   const [result, setResult] = useState<UploadSummary | null>(null)
   const [busy, setBusy] = useState(false)
+  const [noticeChecked, setNoticeChecked] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [confirmError, setConfirmError] = useState('')
   const busyRef = useRef(false)
   const lifecycle = useRef<symbol | null>(null)
 
@@ -32,10 +40,27 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
     return () => { lifecycle.current = null }
   }, [])
 
+  async function handleConfirm() {
+    const currentLifecycle = lifecycle.current
+    if (!noticeChecked || confirming || currentLifecycle === null) return
+    setConfirming(true)
+    setConfirmError('')
+    try {
+      await confirmSynthetic(workspaceId)
+      if (lifecycle.current === currentLifecycle) onConfirmed()
+    } catch {
+      if (lifecycle.current === currentLifecycle) {
+        setConfirmError('The confirmation could not be saved. Check the connection and try again.')
+      }
+    } finally {
+      if (lifecycle.current === currentLifecycle) setConfirming(false)
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const currentLifecycle = lifecycle.current
-    if (busyRef.current || currentLifecycle === null) return
+    if (busyRef.current || currentLifecycle === null || !confirmed) return
 
     const errors = validateMaterialUpload({ file, materialId, title, provider, date })
     setFieldErrors(errors)
@@ -88,6 +113,28 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
         <p>The file reaches the psychtool Web server for parsing and identifier checks. Uploading does not send it to a model.</p>
         <p>Automatic detection can miss identifying information. Manually review the material and claims before preparing any model request. Use only synthetic or public development materials.</p>
       </div>
+      {!confirmed && (
+        <div className="synthetic-confirmation" role="group" aria-labelledby={`${id}-confirm-heading`}>
+          <h4 id={`${id}-confirm-heading`}>Confirm before the first upload</h4>
+          <p>{SYNTHETIC_NOTICE}</p>
+          <label className="claim-row">
+            <input
+              type="checkbox"
+              checked={noticeChecked}
+              disabled={confirming}
+              onChange={(event) => setNoticeChecked(event.target.checked)}
+            />
+            <span>I confirm this case uses only synthetic or separately approved materials.</span>
+          </label>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={!noticeChecked || confirming || !workspaceId}
+            onClick={handleConfirm}
+          >{confirming ? 'Confirming…' : 'Confirm and enable upload'}</button>
+          {confirmError && <p className="error-banner" role="alert">{confirmError}</p>}
+        </div>
+      )}
       <form className="upload-fields" onSubmit={handleSubmit} noValidate aria-busy={busy}>
         <label className="field-label" htmlFor={`${id}-file`}>
           File (required)
@@ -98,12 +145,12 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
             type="file"
             accept={UPLOAD_ACCEPT}
             required
-            disabled={busy}
+            disabled={busy || !confirmed}
             aria-invalid={Boolean(fieldErrors.file)}
             aria-describedby={`${id}-file-help${fieldErrors.file ? ` ${id}-file-error` : ''}`}
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
-          <span id={`${id}-file-help`}>TXT, Markdown, PDF, PNG or JPEG. Maximum 10 MiB (10,485,760 bytes). PDF and images require server-side OCR.</span>
+          <span id={`${id}-file-help`}>TXT or Markdown, UTF-8. Maximum 10 MiB (10,485,760 bytes). Scanned PDFs and images are not supported in this version.</span>
           {fieldErrors.file && <span id={`${id}-file-error`} role="alert">{fieldErrors.file}</span>}
         </label>
         <label className="field-label" htmlFor={`${id}-materialId`}>
@@ -119,7 +166,7 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
             autoComplete="off"
             spellCheck={false}
             required
-            disabled={busy}
+            disabled={busy || !confirmed}
             aria-invalid={Boolean(fieldErrors.materialId)}
             aria-describedby={`${id}-materialId-help${fieldErrors.materialId ? ` ${id}-materialId-error` : ''}`}
           />
@@ -135,7 +182,7 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             required
-            disabled={busy}
+            disabled={busy || !confirmed}
             aria-invalid={Boolean(fieldErrors.title)}
             aria-describedby={fieldErrors.title ? `${id}-title-error` : undefined}
           />
@@ -150,7 +197,7 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
             value={provider}
             onChange={(event) => setProvider(event.target.value)}
             required
-            disabled={busy}
+            disabled={busy || !confirmed}
             aria-invalid={Boolean(fieldErrors.provider)}
             aria-describedby={fieldErrors.provider ? `${id}-provider-error` : undefined}
           />
@@ -166,13 +213,13 @@ export default function MaterialUploadPanel({ workspaceId, onUploaded, onReview,
             value={date}
             onChange={(event) => setDate(event.target.value)}
             required
-            disabled={busy}
+            disabled={busy || !confirmed}
             aria-invalid={Boolean(fieldErrors.date)}
             aria-describedby={fieldErrors.date ? `${id}-date-error` : undefined}
           />
           {fieldErrors.date && <span id={`${id}-date-error`} role="alert">{fieldErrors.date}</span>}
         </label>
-        <button className="primary-button" type="submit" disabled={busy || !workspaceId}>
+        <button className="primary-button" type="submit" disabled={busy || !workspaceId || !confirmed}>
           {busy ? 'Uploading…' : 'Upload material'}
         </button>
       </form>

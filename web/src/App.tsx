@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { apiRequest, createCase, jsonRequest, workspaceUrl } from './api'
+import { apiRequest, createCase, getWorkspace, jsonRequest, workspaceUrl } from './api'
 import type { Claim, ClaimSuggestion, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
 import { validateCaseId } from './case-form'
 import MaterialUploadPanel from './components/MaterialUploadPanel'
@@ -131,6 +131,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [sourceRevision, setSourceRevision] = useState(0)
+  const [syntheticConfirmed, setSyntheticConfirmed] = useState(false)
   const alive = useRef(false)
   const mutation = useRef(false)
   const base = workspaceUrl(workspaceId)
@@ -142,14 +143,16 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
     Promise.all([
       apiRequest<SectionState[]>(`${base}/sections?template_id=${encodeURIComponent(template.template_id)}`),
       apiRequest<Claim[]>(`${base}/claims`), apiRequest<Material[]>(`${base}/materials`), apiRequest<{ names: string[] }>(`${base}/names`),
-    ]).then(([states, claimData, materialData, nameData]) => {
+      getWorkspace(workspaceId),
+    ]).then(([states, claimData, materialData, nameData, detail]) => {
       if (!active) return
       setSections(states); setClaims(claimData); setMaterials(materialData)
       setMaterialId(materialData[0]?.id ?? '')
       setNames(nameData.names); setNamesText(nameData.names.join('\n')); setReady(true)
+      setSyntheticConfirmed(detail.synthetic_confirmed)
     }).catch(() => { if (active) setError('Could not load the case. Reload to try again.') })
     return () => { active = false; alive.current = false }
-  }, [base, template.template_id])
+  }, [base, template.template_id, workspaceId])
 
   async function refreshSources() {
     const [claimData, materialData] = await Promise.all([apiRequest<Claim[]>(`${base}/claims`), apiRequest<Material[]>(`${base}/materials`)])
@@ -215,7 +218,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
     </section>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {!ready && !error && <p role="status">Loading case…</p>}
-    {ready && <div hidden={!showUpload}><fieldset className="upload-lock" disabled={busy}><MaterialUploadPanel workspaceId={workspaceId} onUploaded={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset></div>}
+    {ready && <div hidden={!showUpload}><fieldset className="upload-lock" disabled={busy}><MaterialUploadPanel workspaceId={workspaceId} confirmed={syntheticConfirmed} onConfirmed={() => setSyntheticConfirmed(true)} onUploaded={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset></div>}
     {ready && showPaste && <fieldset className="upload-lock" disabled={busy}><PasteMaterialPanel workspaceId={workspaceId} onPasted={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset>}
     {showIntake && <section className="names-panel intake-panel" aria-label="Intake claim review">
       <div className="names-panel-copy"><h3>Review each source passage.</h3><p>Assign topic, category and attribution before accepting. These are passage candidates, not diagnostic conclusions.</p></div>

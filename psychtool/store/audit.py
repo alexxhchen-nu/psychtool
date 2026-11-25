@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 AuditAction = Literal[
     "case.create",
     "case.import_json",
+    "case.confirm_synthetic",
     "material.import",
     "claim.accept",
     "section.save",
@@ -50,6 +51,7 @@ AUDIT_ACTIONS: frozenset[str] = frozenset(
     {
         "case.create",
         "case.import_json",
+        "case.confirm_synthetic",
         "material.import",
         "claim.accept",
         "section.save",

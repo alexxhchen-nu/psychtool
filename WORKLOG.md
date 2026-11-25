@@ -243,3 +243,63 @@
 - 實機 `uv run psychtool-server`（port 8811/8812）：無權杖、錯誤權杖、非 ASCII 權杖 → 401；`evil.example` 等 Host → 400；正確權杖 → 200；四次啟動的日誌都找不到權杖；稽核列與日誌都找不到標記字串 `ZEBRA-MARKER-7f3a`；直接對 DB 下 `UPDATE`/`DELETE audit_log` → `IntegrityError: audit log is append-only`；`verify_audit_chain` → `(True, 14, None)`。
 - 發送中途當機：http transport 指向本機掛住的假端點，送出後 SIGKILL 伺服器 → 重啟後請求變 `send_interrupted`、鎖清除、寫入一筆 `egress.send_lock_recovered`；再送 → 409；假端點總共只收到 **1** 次請求；再重啟 → `0 recovered`（冪等）。
 - `PSYCHTOOL_HOST=0.0.0.0` → exit 2；資料庫在 `Google Drive` 下 → exit 2。
+
+---
+
+## 2026-11-24 15:57 CST — PT-04：M1 上傳規則、每案合成確認與僅記錄型別的錯誤處理
+
+**執行者**：Kimi for Coding（kimi-for-coding）
+
+### 變更
+
+- `psychtool/core/ingest.py`：新增伺服器專用 `parse_server_upload`——僅 `.txt`/`.md`、上限 10 MiB（讀 MAX+1 判定）、無 OCR；拒絕以 `ServerUploadError` 攜帶白名單 reason code 與固定文案（`too_large`/`unsupported_type`/`scan_not_supported`/`not_utf8`/`empty`）；CLI `parse_upload` 行為不變。
+- `psychtool/store/sqlite_store.py`：schema v3——`cases` 新增 nullable `synthetic_confirmed_at`（v2→v3 為 `ALTER TABLE`）；`confirm_synthetic()` 以 `UPDATE ... WHERE ... IS NULL` 實現 set-once。
+- `psychtool/store/audit.py`：白名單新增 `case.confirm_synthetic`。
+- `psychtool/server/app.py`：上傳路由改走 `parse_server_upload`，拒絕回 `{detail, reason}`（413/400）且先於任何寫入；未確認個案回 409 `confirmation_required`；新增 `POST .../synthetic-confirmation` 與 `GET /api/workspaces/{case_id}`；貼上路徑確認後亦記 `case.confirm_synthetic`（set-once）；新增捕捉全部例外的 500 處理器（固定 body，只記例外型別名）。
+- `psychtool/server/main.py`：`_uvicorn_log_config()` deep-copy 已安裝 uvicorn 的 `LOGGING_CONFIG`，沿 logger 樹找到實際有 handler 的一層掛 `UvicornErrorTraceFilter`（uvicorn 0.54 的 `uvicorn.error` 無 handler，記錄向上傳播）；filter 把帶 `exc_info` 的記錄改寫為 `unhandled error: <型別名>`。
+- `psychtool/server/security.py`：新增純 ASGI `SecurityHeadersASGIMiddleware`，在 app.py 包到已建成中介軟體堆疊最外層——ServerErrorMiddleware 送的固定 500 也帶 PT-03 安全標頭（原本會遺漏）。
+- 前端：`web/src/upload.ts`（僅 .txt/.md 驗證、R12 固定說明、顯示伺服器白名單拒絕文案）、`web/src/api.ts`（`ApiError.serverMessage`、`confirmSynthetic`、`getWorkspace`）、`MaterialUploadPanel.tsx`（首次上傳確認閘門）、`App.tsx`（載入確認狀態）。
+- 測試：`tests/test_upload_api.py`（R2-AC1/2/3、R12、版本、無回顯標記、500 捕捉、uvicorn 子程序 stderr 掃描）；`tests/test_audit_log.py`（v1/v2 遷移改用 `_SCHEMA_VERSION`、新增 v2→v3 遷移測試、full-flow 稽核序含 `case.confirm_synthetic`）；`tests/test_ingest.py`（先確認再上傳）；`tests/conftest.py`（`build_client` 加 `raise_server_exceptions`）；`web/tests/upload.test.ts` 改寫（並把 raw NUL byte 改為 `` 跳脫）；新增 `web/e2e/upload.e2e.ts`。
+- 文件：ADR 0012；三份 README 各加一段材料上傳說明。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **468 passed**（沙箱 `uv` cache 唯讀，`uv run` 不可用；以 `.venv` 直跑等價）。
+- `cd web && bun test` 與 `bun run build`、Playwright e2e：沙箱限制，待 supervisor 沙箱外執行。
+
+### 未解決事項
+
+- Playwright e2e（含新 `upload.e2e.ts`）需在沙箱外跑瀏覽器。
+- M1 無 OCR 為刻意取捨；掃描檔支援需另開 ADR。
+
+---
+
+## 2026-11-24 16:05 CST — PT-03 review answers from Alex, and PT-04 supervisor verification
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding: runs 1–2 hit the 5-hour quota (HTTP 429), and from run 3 the automatic retry succeeded. The deepseek-flash fallback was not triggered.
+
+### Alex's answers to the 4 PT-03 questions (2026-11-24)
+
+1. **Vite dev-mode Host check:** keep relying on Vite's own Host check. Not changed in M1.
+2. **User-chosen case / material ids:** switch to generated ids before real data arrives. Tracked separately; not in PT-04.
+3. **Audit hashes:** switch to HMAC (keyed hashes) before real data arrives, together with SQLCipher. Tracked separately; not in PT-04.
+4. **Unexpected errors in logs:** add a catch-all error handler that logs only the exception type. The client gets a fixed 500. **Done in PT-04.**
+
+### Supervisor direct fixes
+
+- `CaseStore.confirm_synthetic` now writes the `case.confirm_synthetic` audit row in the **same transaction** as the confirmation. The worker version wrote it in the route as a separate transaction, which broke ADR 0011. Added a rollback test that injects an audit failure: the confirmation rolls back too. The test was confirmed failing on the old code first.
+- `web/e2e/upload.e2e.ts`: the PDF step now actually submits and checks the R12 message. Added a server-side check (direct API upload of a PDF → 400 `scan_not_supported`, material count unchanged).
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **469 passed**; `bun test` → **114 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **4 passed** (case-switch, security, upload, walking-skeleton). 
+- Live `uv run psychtool-server`:
+  - Upload before confirmation → 409 `confirmation_required`.
+  - Confirming twice writes only 1 audit row.
+  - .md upload works (2 passages); same id again → v2, v1 unchanged.
+  - 11 MiB → 413 `too_large`; .pdf / .png → 400 `scan_not_supported`; non-UTF-8 → 400 `not_utf8`; .docx → 400 `unsupported_type`. Material, passage and audit counts are unchanged after every rejection.
+  - The marker is in neither the audit rows nor the logs.
+- Live catch-all check:
+  - The real `main()` with one store method forced to raise an exception carrying a marker → response `500 {"detail":"internal error"}` with the CSP header.
+  - The log has only `unhandled error: RuntimeError`, with no marker and no Traceback.
+  - Control run with the uvicorn filter removed: the marker and the Traceback both appear, which proves the filter is what stops them.

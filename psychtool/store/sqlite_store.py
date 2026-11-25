@@ -44,14 +44,15 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Mirrors the material-id rule used by the ingest path.
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS cases (
-        case_id     TEXT PRIMARY KEY CHECK (length(case_id) BETWEEN 1 AND 64),
-        data_tier   TEXT NOT NULL CHECK (data_tier IN ('synthetic', 'real')),
-        created_at  TEXT NOT NULL
+        case_id                TEXT PRIMARY KEY CHECK (length(case_id) BETWEEN 1 AND 64),
+        data_tier              TEXT NOT NULL CHECK (data_tier IN ('synthetic', 'real')),
+        created_at             TEXT NOT NULL,
+        synthetic_confirmed_at TEXT
     )
     """,
     """
@@ -261,6 +262,12 @@ _MIGRATION_STATEMENTS = {
         """,
         "DROP TABLE egress_requests",
         "ALTER TABLE egress_requests_v2 RENAME TO egress_requests",
+    ),
+    # Schema v2 -> v3 (ADR 0012): remember the R2-AC3 first-upload
+    # confirmation per case. NULL means "not yet confirmed"; confirming is a
+    # one-way set-once write in the same transaction as its audit row.
+    3: (
+        "ALTER TABLE cases ADD COLUMN synthetic_confirmed_at TEXT",
     ),
 }
 
@@ -570,6 +577,41 @@ class CaseStore:
     @property
     def _db(self) -> sqlite3.Connection:
         return self._store._connect()
+
+    # -- synthetic-materials confirmation (R2-AC3, ADR 0012) ---------------
+
+    def is_synthetic_confirmed(self) -> bool:
+        """True once this case's first-upload confirmation was recorded."""
+        row = self._db.execute(
+            "SELECT synthetic_confirmed_at FROM cases WHERE case_id = ?",
+            (self._case_id,),
+        ).fetchone()
+        return row is not None and row["synthetic_confirmed_at"] is not None
+
+    def confirm_synthetic(self) -> bool:
+        """Record the first-upload confirmation, set-once and idempotent.
+
+        Returns True only when this call changed the case. The
+        ``case.confirm_synthetic`` audit row is appended in the *same*
+        transaction (ADR 0011), so a crash or an audit failure can never leave
+        a confirmation without its audit row; repeated confirmations append
+        no extra rows.
+        """
+        with self._store.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE cases SET synthetic_confirmed_at = ?"
+                " WHERE case_id = ? AND synthetic_confirmed_at IS NULL",
+                (_utcnow(), self._case_id),
+            )
+            changed = cursor.rowcount == 1
+            if changed:
+                self.append_audit(
+                    case_id=self._case_id,
+                    action="case.confirm_synthetic",
+                    object_type="case",
+                    object_id=self._case_id,
+                )
+            return changed
 
     def append_audit(
         self,

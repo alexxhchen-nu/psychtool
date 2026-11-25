@@ -3,10 +3,18 @@ import type { ApprovalInput, EgressRequest, PasteMaterialInput, PrepareInput, Se
 /** Never expose an error response body: validation/provider errors may contain input. */
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number) {
+  /**
+   * Fixed server rejection text, present only when the server sent its
+   * allowlisted upload-rejection body ({detail, reason}). The detail is a
+   * constant chosen server-side and never quotes user input, so showing it
+   * verbatim cannot leak material text.
+   */
+  readonly serverMessage: string | null
+  constructor(status: number, serverMessage: string | null = null) {
     super(status === 0 ? 'Connection failed.' : `Request failed (${status}).`)
     this.name = 'ApiError'
     this.status = status
+    this.serverMessage = serverMessage
   }
 }
 
@@ -57,12 +65,41 @@ export function jsonRequest<T>(url: string, method: 'POST' | 'PUT', body: unknow
   return apiRequest<T>(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 }
 
+/**
+ * Upload with the server's fixed rejection reason surfaced. Only the upload
+ * endpoint returns the allowlisted {detail, reason} body; every other API
+ * error stays an opaque status (see ApiError).
+ */
+async function uploadRequest(url: string, form: FormData): Promise<UploadResult> {
+  let response: Response
+  try { response = await fetch(url, withSessionHeader({ method: 'POST', body: form })) } catch { throw new ApiError(0) }
+  if (!response.ok) {
+    let serverMessage: string | null = null
+    try {
+      const body = await response.json() as { detail?: unknown; reason?: unknown }
+      if (typeof body.detail === 'string' && typeof body.reason === 'string') {
+        serverMessage = body.detail
+      }
+    } catch { serverMessage = null }
+    throw new ApiError(response.status, serverMessage)
+  }
+  try { return await response.json() as UploadResult } catch { throw new ApiError(0) }
+}
+
 export function uploadMaterial(workspaceId: string, form: FormData): Promise<UploadResult> {
-  return apiRequest(`${workspaceUrl(workspaceId)}/materials`, { method: 'POST', body: form })
+  return uploadRequest(`${workspaceUrl(workspaceId)}/materials`, form)
 }
 
 export function createCase(caseId: string): Promise<Workspace> {
   return jsonRequest('/api/workspaces', 'POST', { case_id: caseId })
+}
+
+export function confirmSynthetic(workspaceId: string): Promise<{ case_id: string; synthetic_confirmed: boolean }> {
+  return apiRequest(`${workspaceUrl(workspaceId)}/synthetic-confirmation`, { method: 'POST' })
+}
+
+export function getWorkspace(workspaceId: string): Promise<{ case_id: string; synthetic_confirmed: boolean }> {
+  return apiRequest(workspaceUrl(workspaceId))
 }
 
 export function pasteMaterial(workspaceId: string, input: PasteMaterialInput): Promise<UploadResult> {
