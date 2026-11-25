@@ -145,3 +145,305 @@
 
 - `web/tsconfig.app.tsbuildinfo` 為既有受追蹤的建置產物，build 後有變動（未提交）。
 - Playwright e2e 在沙箱外以 repo 預設設定執行（`bunx playwright install chromium` 後 `bun run e2e`）；沙箱內因無法下載瀏覽器未能以預設設定驗證。
+
+---
+
+## 2026-11-24 14:41 CST — PT-03：本地安全基線與僅附加稽核日誌（S3/S4/S6）
+
+**執行者**：kimi-for-coding via Grok Workhorse
+
+### 變更
+
+- 新增 `psychtool/server/security.py`：每次啟動一組工作階段權杖（顯式參數 → `PSYCHTOOL_SESSION_TOKEN` ≥32 字元 → `secrets.token_urlsafe(32)`），所有 `/api/*`（除 `GET /api/health`）要求 `X-Psychtool-Token`；Host 僅允許 loopback hostname（否則 400）；每個回應帶嚴格 CSP 與 `nosniff`/`no-referrer`/`DENY`；SPA index 注入 `<meta name="psychtool-session">` 且 `Cache-Control: no-store`。權杖值永不進日誌。
+- 新增 `psychtool/server/selfcheck.py`：啟動自檢逐項記錄（bind/token/host-check/csp/data-dir/disk-encryption/audit-chain/send-lock-recovery）；資料庫位於雲端同步資料夾即拒絕啟動（整段路徑元件比對，`Dropboxed-notes` 不誤判）；磁碟加密（FileVault/dm-crypt/BitLocker）僅警告。
+- `psychtool/server/main.py`：僅綁定 loopback，非 loopback 的 `PSYCHTOOL_HOST` 以 exit 2 拒絕啟動；啟動前跑自檢。
+- `psychtool/server/app.py`：接線 middleware 與稽核事件；所有錯誤回應改固定文案（不再回傳 `str(exc)`）。
+- 新增 `psychtool/store/audit.py`：SQLite `audit_log` 表（schema v2），`BEFORE UPDATE/DELETE` trigger 擋修改，`entry_hash` 雜湊鏈（sha256 of canonical JSON）可偵測繞過 trigger 的竄改；writer 結構性拒絕自由文字（action/object_type/destination 白名單、object_id 限識別符形狀含 `-`/`_` 開頭、content_hash 限 64 hex）。
+- 新增 `psychtool/store/recovery.py`：crash 後 fail-closed 復原——外來 boot id 的 send lock：status `sent` 只清鎖；其餘標記終態 `send_interrupted`（永不可再送）；僅 transition lock 陳舊時以 `egress.transition_lock_recovered` 稽核；本 boot 的鎖不動；每列 UPDATE 以觀察到的 owner 為條件（掃描後被改的列跳過）；冪等。
+- Schema v2 遷移：新增 audit_log + triggers，並重建 `egress_requests`（SQLite 無法改 CHECK；`PRAGMA defer_foreign_keys=ON` + 建新表/複製/drop/rename + `PRAGMA foreign_key_check`）。
+- `EgressStatus` 新增終態 `send_interrupted`，貫穿 `types.ts`、`egress-state.ts`（phase/message/validateRecoveredRequest）、`EgressReviewPanel.tsx`（標籤「Send interrupted — prepare a new request」，terminal，不可 send）。
+- 前端 `api.ts` 從 meta tag 讀權杖並附於每個 API 請求；`vite.config.ts` proxy 從 `PSYCHTOOL_SESSION_TOKEN` 注入權杖。
+- 測試：新增 `tests/test_security.py`（36）、`tests/test_selfcheck.py`（37）、`tests/test_audit_log.py`（26，含 token_urlsafe `-`/`_` 開頭 request id 與 v1→v2 重建後 recovery）、`tests/test_send_lock_recovery.py`（7，含 SIGKILL 子进程、sent 後 crash、本 boot 鎖不動、競態跳過、冪等）；`tests/conftest.py` 提供 `build_client`；前端新增 `web/tests/api-session-token.test.ts`（6）與 `egress-state` 的 send_interrupted 測試（5）；e2e 新增 `web/e2e/security.e2e.ts`（CSP 標頭、無 CSP console 錯誤、無權杖 401）。
+- 文件：ADR 0011；三份 README 同步（本地安全基線、開發權杖提示、新測試）。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **428 passed**（連跑 3 次全綠；沙箱 uv cache 唯讀，`uv run --extra dev pytest -q` 無法初始化 cache，以 venv 直跑等價命令）。supervisor 指出的 request id 開頭 `-`/`_` 導致稽核 500 的真 bug 已修（白名單放寬），非 flake。
+- `cd web && bun test` → **110 pass / 0 fail**；`bun run build` → exit 0；`web/dist/index.html` 無內聯 script/style，與嚴格 CSP 相容。
+- 正常啟動的 self-check 輸出（`run_self_checks`，generated 權杖）：
+  - `self-check ok: bind 127.0.0.1`
+  - `self-check ok: session token: generated (not shown)`
+  - `self-check ok: Host header restricted to loopback names`
+  - `self-check ok: strict Content-Security-Policy on all responses`
+  - `self-check ok: data dir is not inside a cloud-sync folder`
+  - `self-check warn: system disk encryption: off (warning only in M1)`（沙箱機無 FileVault/dm-crypt，屬預期警告）
+  - `self-check ok: audit chain verified (0 entries)`
+  - `self-check ok: stale send-lock recovery: 0 recovered`
+- 沙箱外完整指令（`uv run --extra dev pytest -q && cd web && bun install && bun test && bun run build`）與 Playwright e2e：**pending supervisor**（沙箱無法下載瀏覽器）。
+
+### 未解決事項
+
+- Playwright e2e（含新 `security.e2e.ts`）需在沙箱外以 repo 預設設定執行。
+- 稽核鏈防「可被發現的竄改」，不防有檔案權限者 drop trigger 後重算整條鏈（ADR 0011 已聲明）；本專案尚未符合 HIPAA。
+
+---
+
+## 2026-11-24 15:15 CST — PT-03 修正：稽核列與狀態變更同交易（supervisor round 2）
+
+**執行者**：kimi-for-coding → deepseek-flash via Grok Workhorse（Kimi 5 小時配額用盡，HTTP 429，自動 fallback）
+
+### 變更
+
+- **稽核原子性（阻塞項）**：把四個事件從路由層移進 store 層既有交易內。
+  - `claim.accept`：改由 `CaseStore.add_claim` 在插入 claim 的同一交易寫入（content_hash 為 claim.text 的 sha256，永不寫 claim 文字）。
+  - `egress.prepare` / `egress.approve` / `egress.invalidate` / `egress.send`：`CaseStore.save_egress_request` 在交易內先讀該列前一 status，僅在 status 實際變更時寫對應稽核列（同狀態不重複寫），與狀態保存同一交易。
+  - `egress.send` 的 destination：server 在呼叫 `send_approved` 前設 `case.audit_destination = config.transport`（`fake`/`http`）；寫入時仍過白名單。`SqliteGatewayStore` 轉發該屬性。
+  - 新增白名單 action `egress.invalidate`（`AuditAction` + `AUDIT_ACTIONS`）。
+  - JSON store 路徑（`JsonDirStore` / core `save_egress_request`）維持不變，不寫稽核。
+  - 移除路由層 `claim.accept`、`egress.prepare`、`egress.approve`、`egress.send` 的 `append_audit`，以及 send 外層吞錯的 `except Exception`。保留 `egress.output_blocked`（事件非狀態變更），其失敗日誌改固定字串 `logger.error("could not audit blocked model output")`，不再用 `exception()`。
+- **日誌衛生（小項）**：確認 `recovery.py` 無任何 logging（不會外洩例外文字）；`selfcheck.py` 的 `except` 只回傳固定狀態字串（`unknown`/`not-encrypted`），不含例外訊息。
+- **測試**（`tests/test_audit_log.py`）：
+  - `test_claim_accept_and_audit_row_roll_back_together`：注入 `append_audit` 失敗於 claim accept，斷言 claim 與稽核列皆回滾（注入錯誤以 500 回應呈現）。
+  - `test_sent_save_and_audit_row_roll_back_together_fail_closed`：注入 `egress.send` 稽核失敗，斷言 status 仍為 `approved`、無 `egress.send` 列、send 鎖仍持有（fail-closed）；以新 boot id 復原 → `send_interrupted` 且恰一列 `egress.send_lock_recovered`，仍無 `egress.send`。
+  - `test_full_flow_produces_one_audit_row_per_event_in_order`：完整流程恰好一列、依序 `case.create`、`material.import`、`claim.accept`、`egress.prepare`、`egress.approve`、`egress.send`，且 send 列的 destination 為 `fake`、content_hash 相符。
+  - `test_invalidation_writes_audit_row_in_same_transaction`：`invalidate_request` 產生 `egress.invalidate` 列，content_hash 相符。
+- **文件**：ADR 0011 更新為「事件與狀態同一交易」，補上 `egress.invalidate` 與 `audit_destination` 機制。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **432 passed**（連跑 3 次全綠）。
+- `cd web && bun test` → **110 pass / 0 fail**；`bun run build` → 成功。
+- 說明：沙箱 `uv` cache 唯讀，`uv run --extra dev pytest -q` 無法初始化；以 `.venv/bin/python -m pytest -q` 等價執行。
+
+### 未解決事項
+
+- Playwright e2e 仍需沙箱外執行（沙箱無法下載瀏覽器）。
+- 稽核鏈只讓竄改「可被發現」，不防有檔案權限者 drop trigger 後重算整鏈（ADR 0011 已聲明）；本專案尚未符合 HIPAA。
+
+---
+
+## 2026-11-24 15:23 CST — PT-03 supervisor 核驗與修正（沙箱外、全新 clone）
+
+**執行者**：Grok Workhorse supervisor（worker：kimi-for-coding，run 4–6 遇 Kimi 配額 HTTP 429 後自動 fallback 至 deepseek-flash 完成 round 2）
+
+### supervisor 直接修正
+
+- `web/src/App.css`：移除 Google Fonts 遠端 `@import`（被嚴格 CSP 擋下、`security.e2e.ts` 抓到，也違反 S3「無遙測/無外連」）；改為本機字型堆疊。
+- 新增 `tests/test_no_telemetry.py`：掃描 `psychtool/**/*.py` 與 `web/src`（ts/tsx/css/html）及 `web/index.html`，非 loopback 的 http(s) URL 一律失敗。
+- `psychtool/server/main.py`：替 `psychtool` logger 加 INFO handler，啟動日誌才會真的顯示通過的自檢項（原本只看得到 warn 行）；`create_app` 改在雲端同步檢查之後才 import。
+- `psychtool/server/app.py`、`psychtool/server/__init__.py`：模組層 `app` 改為延遲建立，import 不再開啟預設資料庫（同步資料夾會在建立 DB 檔前就被拒）。
+- `psychtool/server/security.py`：權杖以 bytes 比對，非 ASCII 權杖回 401 而非 500；Host 的 port 必須是純數字（`127.0.0.1:80@evil.example` 拒絕）。
+- 新增 `tests/test_startup.py` 與 `test_security.py` 新案例；每項修正都先確認在舊程式上失敗（red）再通過（green）。
+- 修正本檔 PT-03 前兩則的時間（原寫成 UTC 數字）與執行者。
+
+### 實際核驗結果（commit 565e5b2，全新 clone）
+
+- `uv run --extra dev pytest -q` → **440 passed**（連跑 3 次）。
+- `cd web && bun install --frozen-lockfile && bun test` → **110 pass / 0 fail**；`bun run build` → 成功；`bun run e2e` → **3 passed**（case-switch、security、walking-skeleton）。
+- 實機 `uv run psychtool-server`（port 8811/8812）：無權杖、錯誤權杖、非 ASCII 權杖 → 401；`evil.example` 等 Host → 400；正確權杖 → 200；四次啟動的日誌都找不到權杖；稽核列與日誌都找不到標記字串 `ZEBRA-MARKER-7f3a`；直接對 DB 下 `UPDATE`/`DELETE audit_log` → `IntegrityError: audit log is append-only`；`verify_audit_chain` → `(True, 14, None)`。
+- 發送中途當機：http transport 指向本機掛住的假端點，送出後 SIGKILL 伺服器 → 重啟後請求變 `send_interrupted`、鎖清除、寫入一筆 `egress.send_lock_recovered`；再送 → 409；假端點總共只收到 **1** 次請求；再重啟 → `0 recovered`（冪等）。
+- `PSYCHTOOL_HOST=0.0.0.0` → exit 2；資料庫在 `Google Drive` 下 → exit 2。
+
+---
+
+## 2026-11-24 15:57 CST — PT-04：M1 上傳規則、每案合成確認與僅記錄型別的錯誤處理
+
+**執行者**：Kimi for Coding（kimi-for-coding）
+
+### 變更
+
+- `psychtool/core/ingest.py`：新增伺服器專用 `parse_server_upload`——僅 `.txt`/`.md`、上限 10 MiB（讀 MAX+1 判定）、無 OCR；拒絕以 `ServerUploadError` 攜帶白名單 reason code 與固定文案（`too_large`/`unsupported_type`/`scan_not_supported`/`not_utf8`/`empty`）；CLI `parse_upload` 行為不變。
+- `psychtool/store/sqlite_store.py`：schema v3——`cases` 新增 nullable `synthetic_confirmed_at`（v2→v3 為 `ALTER TABLE`）；`confirm_synthetic()` 以 `UPDATE ... WHERE ... IS NULL` 實現 set-once。
+- `psychtool/store/audit.py`：白名單新增 `case.confirm_synthetic`。
+- `psychtool/server/app.py`：上傳路由改走 `parse_server_upload`，拒絕回 `{detail, reason}`（413/400）且先於任何寫入；未確認個案回 409 `confirmation_required`；新增 `POST .../synthetic-confirmation` 與 `GET /api/workspaces/{case_id}`；貼上路徑確認後亦記 `case.confirm_synthetic`（set-once）；新增捕捉全部例外的 500 處理器（固定 body，只記例外型別名）。
+- `psychtool/server/main.py`：`_uvicorn_log_config()` deep-copy 已安裝 uvicorn 的 `LOGGING_CONFIG`，沿 logger 樹找到實際有 handler 的一層掛 `UvicornErrorTraceFilter`（uvicorn 0.54 的 `uvicorn.error` 無 handler，記錄向上傳播）；filter 把帶 `exc_info` 的記錄改寫為 `unhandled error: <型別名>`。
+- `psychtool/server/security.py`：新增純 ASGI `SecurityHeadersASGIMiddleware`，在 app.py 包到已建成中介軟體堆疊最外層——ServerErrorMiddleware 送的固定 500 也帶 PT-03 安全標頭（原本會遺漏）。
+- 前端：`web/src/upload.ts`（僅 .txt/.md 驗證、R12 固定說明、顯示伺服器白名單拒絕文案）、`web/src/api.ts`（`ApiError.serverMessage`、`confirmSynthetic`、`getWorkspace`）、`MaterialUploadPanel.tsx`（首次上傳確認閘門）、`App.tsx`（載入確認狀態）。
+- 測試：`tests/test_upload_api.py`（R2-AC1/2/3、R12、版本、無回顯標記、500 捕捉、uvicorn 子程序 stderr 掃描）；`tests/test_audit_log.py`（v1/v2 遷移改用 `_SCHEMA_VERSION`、新增 v2→v3 遷移測試、full-flow 稽核序含 `case.confirm_synthetic`）；`tests/test_ingest.py`（先確認再上傳）；`tests/conftest.py`（`build_client` 加 `raise_server_exceptions`）；`web/tests/upload.test.ts` 改寫（並把 raw NUL byte 改為 `` 跳脫）；新增 `web/e2e/upload.e2e.ts`。
+- 文件：ADR 0012；三份 README 各加一段材料上傳說明。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **468 passed**（沙箱 `uv` cache 唯讀，`uv run` 不可用；以 `.venv` 直跑等價）。
+- `cd web && bun test` 與 `bun run build`、Playwright e2e：沙箱限制，待 supervisor 沙箱外執行。
+
+### 未解決事項
+
+- Playwright e2e（含新 `upload.e2e.ts`）需在沙箱外跑瀏覽器。
+- M1 無 OCR 為刻意取捨；掃描檔支援需另開 ADR。
+
+---
+
+## 2026-11-24 16:05 CST — PT-03 review answers from Alex, and PT-04 supervisor verification
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding: runs 1–2 hit the 5-hour quota (HTTP 429), and from run 3 the automatic retry succeeded. The deepseek-flash fallback was not triggered.
+
+### Alex's answers to the 4 PT-03 questions (2026-11-24)
+
+1. **Vite dev-mode Host check:** keep relying on Vite's own Host check. Not changed in M1.
+2. **User-chosen case / material ids:** switch to generated ids before real data arrives. Tracked separately; not in PT-04.
+3. **Audit hashes:** switch to HMAC (keyed hashes) before real data arrives, together with SQLCipher. Tracked separately; not in PT-04.
+4. **Unexpected errors in logs:** add a catch-all error handler that logs only the exception type. The client gets a fixed 500. **Done in PT-04.**
+
+### Supervisor direct fixes
+
+- `CaseStore.confirm_synthetic` now writes the `case.confirm_synthetic` audit row in the **same transaction** as the confirmation. The worker version wrote it in the route as a separate transaction, which broke ADR 0011. Added a rollback test that injects an audit failure: the confirmation rolls back too. The test was confirmed failing on the old code first.
+- `web/e2e/upload.e2e.ts`: the PDF step now actually submits and checks the R12 message. Added a server-side check (direct API upload of a PDF → 400 `scan_not_supported`, material count unchanged).
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **469 passed**; `bun test` → **114 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **4 passed** (case-switch, security, upload, walking-skeleton). 
+- Live `uv run psychtool-server`:
+  - Upload before confirmation → 409 `confirmation_required`.
+  - Confirming twice writes only 1 audit row.
+  - .md upload works (2 passages); same id again → v2, v1 unchanged.
+  - 11 MiB → 413 `too_large`; .pdf / .png → 400 `scan_not_supported`; non-UTF-8 → 400 `not_utf8`; .docx → 400 `unsupported_type`. Material, passage and audit counts are unchanged after every rejection.
+  - The marker is in neither the audit rows nor the logs.
+- Live catch-all check:
+  - The real `main()` with one store method forced to raise an exception carrying a marker → response `500 {"detail":"internal error"}` with the CSP header.
+  - The log has only `unhandled error: RuntimeError`, with no marker and no Traceback.
+  - Control run with the uvicorn filter removed: the marker and the Traceback both appear, which proves the filter is what stops them.
+
+## 2026-11-24 16:42 CST — PT-04 review answers from Alex, and PT-05 supervisor verification (GROK-35)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with three follow-up rounds after the step limit was hit. The deepseek-flash fallback was not triggered.
+
+### Alex's answers to the 2 PT-04 questions (2026-11-24)
+
+1. **Oversized uploads:** rejecting an oversized body before it is received (instead of spooling it and then returning 413) is a separate task. Not in PT-05.
+2. **Tracebacks in dev:** yes to a dev-only switch that logs full tracebacks. It is off by default and never allowed with real data. **Done in PT-05:** `PSYCHTOOL_DEBUG_TRACEBACKS=1` works only in the synthetic tier; with `PSYCHTOOL_DATA_TIER=real` the server refuses to start (exit 2), and `create_app` forces it off.
+
+### Supervisor direct fixes and review changes
+
+- Fixed a `return ... from exc` syntax error and a docstring typo left by the worker.
+- The JSON workspace import kept renumbering passages after a block, which would have pointed claims at the wrong passages. It now keeps the original passage ids, and rejects the whole import if a claim quotes protected text or cites a blocked passage.
+- The egress re-screen skipped refs it could not load (fail-open). Any load or check error now refuses the prepare.
+- Identifier findings are now computed over the kept paragraphs only.
+- Found in review: the CLI `psychtool import` command wrote to the JSON material store without the screen. The screen now runs inside `workspace.import_material`, which covers the CLI and the eval harness. The CLI prints a held-back line, or exits 1 with nothing written.
+- `fixtures/adolescent-background.json`: the synthetic sentence "本资料没有提供测验分数、诊断或常模资料。" matched the keyword list (a false positive of keyword matching). It now reads "…或标准化比较资料。" Meaning unchanged.
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **534 passed**; `bun test` → **120 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **5 passed** (new: `R13-AC1 norm table paragraph is held back`).
+- Mutation checks: with the keyword check disabled, 6 R13 tests fail; with the real-tier refusal removed, the switch test fails; with the screen removed from `workspace.import_material`, the 3 CLI tests fail.
+- Live CLI: `psychtool import` of a file with a "Scoring key: …" paragraph → exit 0 and a held-back line, with the text absent from the stored JSON. An all-blocked file → exit 1, no material file.
+- Live `psychtool-server` (synthetic):
+  - An upload with a "Norm table: …" paragraph → 200, `blocked_paragraphs: 1`, the plain reason shown. Only the 2 normal paragraphs are stored; the blocked text is in neither the DB dump, the response nor the log. One `material.protected_blocked` audit row (count 1 + sha256), and the chain verifies.
+  - "normal / Normally / 常规" → nothing blocked. All paragraphs blocked → 400 `protected_content`, no material. Paste is filtered the same way.
+  - Checker forced to raise → 503 `protected_check_failed`; material, passage and audit counts are unchanged.
+- Live traceback switch (one store method forced to raise a marker):
+  - Default → 500 and only `unhandled error: RuntimeError`; no marker, no Traceback.
+  - `=1` → a startup warning, and the Traceback and the marker are logged.
+  - `=yes` → off.
+  - `=1` with `PSYCHTOOL_DATA_TIER=real` → refuses to start, exit 2, no DB file created.
+
+## 2026-11-24 17:19 CST — PT-05 review answers from Alex, and PT-06 supervisor verification (GROK-36)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with two follow-up rounds after the step limit was hit. The deepseek-flash fallback was not triggered. The sandbox worktree had no synced `.venv` and no `node_modules`, so the supervisor ran `uv sync --extra dev` and `bun install --frozen-lockfile` there (offline cache).
+
+### Alex's answers to the PT-05 questions (2026-11-24)
+
+1. **Traceback switch with real data:** keep the server-wide refusal (`PSYCHTOOL_DATA_TIER=real` + `PSYCHTOOL_DEBUG_TRACEBACKS=1` → exit 2). Later, the switch is to be forced off whenever **any** real data exists, not decided per case.
+2. **Fixture wording** (…或常模资料 → …或标准化比较资料): OK.
+3. **Whole-prompt R13 check on the JSON/CLI egress path:** OK.
+4. **HTTP codes:** 400 `protected_content` and 503 `protected_check_failed` are OK.
+5. **Added scope, done in PT-06:** NFKC normalization before R13 matching, everywhere the check runs; stored text stays original. No spaced-letter detection, and over-blocking such as "no norm data provided" is accepted.
+
+### Supervisor review changes
+
+- **Sentence splitting:** the ported prototype regex cut sentences at "a.m." ("until about 1 a" / "before falling asleep"). A "." now ends a sentence only when it is followed by whitespace and doesn't come after a known abbreviation (a.m., p.m., Dr., Mr., e.g., …). Decimals like "7.5" stay inside the sentence.
+- **Minimum length:** the prototype's 6-character minimum dropped short Chinese sentences (e.g. "他周末会补觉"). Quotes that contain CJK now need 4 characters.
+- **Performance (found in review):** evidence extraction was quadratic. 8,000 paragraphs took 1.5 s, and about 100k paragraphs (9 MB, under the upload limit) didn't finish in 2 minutes. There is now a per-material passage index, and the abbreviation check no longer copies the text before each dot. A perf guard test was added. Live: an 8.7 MB upload gives `/evidence` 190,000 items in 3.4 s.
+- **Scroll e2e (added by the supervisor):** the R4-AC2 test now uses a 41-paragraph material, so the highlight is only in view if the panel scrolled. It was confirmed failing with `scrollIntoView` removed and passing with it.
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **583 passed**; `bun test` → **129 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **7 passed** (new: 2 evidence tests covering R4-AC1/AC2/AC3).
+- Mutation checks:
+  - NFKC removed → 5 R13 tests fail.
+  - Span check bypassed → the dropped-candidate test fails.
+- Live `psychtool-server` (synthetic):
+  - "Ｎｏｒｍ ｔａｂｌｅ: raw 12 = T 55." was held back.
+  - The kept full-width paragraph ("ＡＢＣ school note, normal day. 他周末会补觉。") is stored as uploaded, not normalized.
+  - `GET /evidence` → 7 items, each with quote == passage[start:end]; this includes "Dr. Lee…", "7.5 hours", the "1 a.m." sentence, a CJK sentence and a sentence after an emoji (code-point offsets).
+  - Case B's text is not in case A's evidence; row counts are unchanged after the GET; an unknown case → 404; no material text in the log.
+
+## 2026-11-24 18:15 CST — PT-06 review answers from Alex, and PT-07 supervisor verification (GROK-37)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with three follow-up rounds. The deepseek-flash fallback was not triggered. The supervisor provisioned `.venv`/`node_modules` in the sandbox worktree and ran Playwright outside it.
+
+### Alex's answers to the PT-06 questions (2026-11-24)
+
+1. **Persist evidence:** evidence is stored (schema v5 `evidence` table) instead of recomputed on every request. Each item has a stable id derived only from its location (case, material, version, passage, start, end), so her category and role choices survive later changes to the extraction or category rules. `test_correction_survives_rules_change` covers it.
+2. **Sentence evidence as the only source** (paragraph claim suggestions cite evidence ids; the parallel paragraph path removed): **deferred, not done in PT-07.** It changes the claims model and schema (claims FK, egress lineage, the walking-skeleton e2e and about 7 test files), which is outside this card's categories/reasons/roles scope. Flagged for WBPM to track as its own card. Claims are unchanged.
+3. **Pagination:** waits for PT-10; not added.
+4. **English-only abbreviation list:** fine for M1; unchanged.
+
+### Supervisor review changes
+
+- After her correction the item still showed the rule's reason next to her chip. It now shows "You chose this category." / "You chose this source role."; the rule's reason stays in `suggested_*_reason`.
+- `GET /evidence` ran one material query per item (N+1, 190k queries for a 9 MB upload). `paragraph` now comes from a JOIN on passages, and ordering follows passage position (the passage-id string sorted "p1000" before "p999").
+- `refresh_evidence` preloads existing rows per material; import-triggered refresh covers only the imported material. 50k-paragraph perf guard added (refresh 1.5 s, list 0.5 s in the sandbox).
+- GET no longer reports `dropped` (it would have been an in-memory recount); only `POST /evidence/refresh` does. e2e fixes: re-select the case after reload; read `dropped` from refresh.
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **658 passed**; `bun test` → **140 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **10 passed** (new: 3 category tests for R5-AC1, R5-AC2 and correction across reload/refresh).
+- Mutation checks (each made the named tests fail):
+  - categorize always returns uncategorized → 26 tests;
+  - refresh overwrites her category → 5, including the rules-change correction test;
+  - unstable id → 6, including `test_stable_id_depends_only_on_location`;
+  - superseded rows deleted → 2;
+  - rule reason shown after her choice → 2.
+- Live `psychtool-server` (synthetic):
+  - "Teacher says he reads slowly in class" → Development & school, role School, each with a reason quoting "Teacher";
+  - "The weather was cloudy that week" → Uncategorized / To confirm with the fixed no-guess reasons;
+  - a PUT correction (Other, Clinician) survived refresh with the same id;
+  - bad key / extra field → 400; cross-case or unknown id → 404;
+  - GET writes nothing; refresh with no change writes no audit row; audit rows hold ids and counts only, no text; case B text is not in case A; no material text in the log;
+  - a 4.9 MB, 80,000-paragraph upload took 7.8 s including extraction, and GET returned 80,000 items in 1.9 s.
+- G-Stack review additions (supervisor, written directly because the Workhorse MCP was unavailable after a box restart):
+  - `test_import_survives_failed_auto_extraction`: a failed auto-extraction keeps the material; the log holds only the exception type; a later refresh recovers.
+  - `test_refresh_route_reports_dropped`: a forged non-verbatim candidate is counted as dropped and not stored.
+  - Each test was confirmed red under its mutation (try/except removed; `dropped` forced to 0).
+
+## 2026-11-24 23:20 CST — PT-08 dimension mapping (GROK-38 / R7)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with four follow-up rounds. The deepseek-flash fallback was not triggered. The supervisor provisioned `.venv`/`node_modules` in the sandbox worktree, ran Playwright outside it, and made small direct fixes (v4 fixture INSERT, genuine v5→v6 migration test, e2e case re-select after reload, per-line split for dims lists so "Source: your list, paragraph n" points at the list line).
+
+### Alex's PT-07 answers folded in
+
+3. **Audit rows record the value she picked:** allowlisted values only, never her text. Schema v6 adds `audit_log.value`. `evidence.categorize` stores a CATEGORY_KEYS key or `reset`; `evidence.set_role` stores a ROLE_KEYS key or `reset`; `evidence.set_dimension` stores `confirm` | `none` | `reset` | a `dim_[0-9a-f]{24}` id (the id, never the name). Anything else is rejected at the audit layer. Covered by `tests/test_dimensions_store.py`. Pagination still waits for PT-10. Sentence evidence as the only source remains GROK-51, not started.
+
+### Scope delivered
+
+- Dimension list upload (`kind=dims`), one list per case, comparison suggestions, the four hard rules from tech-design §4, and Needs review actions (Confirm / Change to… / Wrong, no dimension).
+- Dimensions page matches the prototype (copy, grouping, chips, source highlights). Screenshot: supervisor compared `web/test-results/dimensions-page.png` to `cur.html` `pDims`/`dimRow`/`dimChip`.
+- All nine R7 ACs have API tests (`test_r7_acN_*`) and e2e titles containing `R7-ACN` (AC7 is the API guard; AC1–AC6 plus Wrong-no-dimension are in Playwright).
+- ADR 0016. R6 invalidation is PT-09; citecheck/draft filtering is PT-12.
+- Follow-up: push CI (`ci.yml` on push) failed once on R7-AC5 because `setupCase` posted materials before the synthetic-confirmation request had landed (403). The test now waits for the confirmation notice to disappear, matching `upload.e2e.ts`. The pull_request CI run on the same head was already green.
+
+## 2026-11-24 23:59 CST — PT-20 sentence evidence as the only source (GROK-51)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with two follow-up rounds (schema/migration, then suggestions/routes/lineage, then UI/e2e). The deepseek-flash fallback was checked first and was down (HTTP 524); it was not used. PT-09 was not started.
+
+### Scope delivered
+
+- Schema v7 adds the `claim_evidence` junction table (composite FKs block cross-case citation). `Claim` / `ClaimSuggestion` carry `evidence_ids`. A genuine v6→v7 migration links each existing claim to the active same-case, same-passage sentence evidence; superseded and cross-case rows are not linked; claims whose passage has no evidence get zero junction rows. Audit rows are not rewritten; the chain still verifies.
+- `suggest_claims` emits one paragraph suggestion per passage that has stored active sentence evidence, citing those `ev_` ids (never empty). The parallel paragraph-only path is gone. `accept_suggestion` and `POST /claims` require at least one id and reject unknown or cross-case ids with a fixed message that does not reveal whether the id exists on another case.
+- Egress `SourceRef` for kind=claim records the cited ids; they persist in `source_refs`. Protected-content screening also covers the cited evidence quotes.
+- Intake suggestion cards show the cited ids (`data-testid="cited-evidence-ids"`). Walking-skeleton e2e asserts an `ev_` id is visible before accept.
+- ADR 0017. R6 invalidation remains PT-09.
+
+
+## 2026-11-25 11:42 CST — PT-09 one-step correction (GROK-39 / R6)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with two follow-up rounds (store cascade + atomicity, then routes/toast payload, then UI/e2e). The deepseek-flash fallback was checked first and was up; it was not used. PT-10 was not started.
+
+### Scope delivered
+
+- When the effective displayed category or dimension actually changes, one SQLite transaction updates the evidence row and audit, returns citing verified/conflict-viewed claims to pending (text and evidence ids unchanged), returns approved sections that cite any claim built on that evidence to Needs review (saved text unchanged), and invalidates prepared/approved (not sent) egress requests that reference the evidence. Role-only writes, no-op writes, and confirming an already-displayed suggestion do not cascade. Schema stays v7.
+- Both PUT routes return a structured `invalidation` (id lists + the exact English toast). The SPA renders that toast verbatim (`data-testid="correction-toast"`). Unsaved section editor text is never rewritten; an open approved section may only have its status pill updated.
+- Tests: store atomicity (injected mid-transaction failure rolls everything back), toast 0/1/2+ counts, category reset when the effective label changes, approved sections and kind=claim-only egress on already-pending claims, API parity, bun helpers (toast + unsaved text not rewritten), and a Playwright e2e that types unsaved text, changes the cited category, checks the toast, and confirms the prepared request is invalidated.
+- ADR 0018. Supervisor review findings (category-reset trigger; section/egress matching every citing claim) were fixed in chunk 2. Supervisor also fixed the e2e after the worker hit its step limit: accept the stored suggestion, share the Playwright DB path across runner and worker, mark the claim verified through CaseStore, seed sessionStorage so the egress panel can restore an API-prepared request, and only show the editor “Needs review” note when the open approved section actually flips.
+

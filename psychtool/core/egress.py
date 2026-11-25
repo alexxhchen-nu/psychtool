@@ -47,7 +47,12 @@ def _as_egress_store(target: EgressTarget) -> EgressStore:
     return target
 
 EgressPurpose = Literal["section_generation", "draft_generation", "judge", "eval"]
-EgressStatus = Literal["prepared", "approved", "sent", "invalidated"]
+# ``send_interrupted`` is terminal (ADR 0011): a crash left the send outcome
+# unknown, so the request can never be sent again and a fresh request with a
+# new request_id must be prepared instead.
+EgressStatus = Literal[
+    "prepared", "approved", "sent", "invalidated", "send_interrupted"
+]
 ApprovalMode = Literal["human", "synthetic_auto"]
 EgressEvent = Literal[
     "prepared",
@@ -123,6 +128,15 @@ class EgressStaleError(RuntimeError):
     """Raised when an egress request refers to a missing or old source."""
 
 
+class EgressProtectedContentError(RuntimeError):
+    """Raised when material-derived text fails the R13 protected screen.
+
+    The screen (ADR 0013) runs again at prepare time as defense in depth, so
+    material imported before PT-05 can never leave through egress either.
+    Fail-closed: a checker error raises this too, and nothing is persisted.
+    """
+
+
 def _validate_request_id(request_id: str) -> str:
     if not _SAFE_REQUEST_ID.fullmatch(request_id):
         raise ValueError("request_id must contain only ASCII letters, digits, '_' or '-'")
@@ -133,6 +147,10 @@ class SourceRef(BaseModel):
     kind: Literal["claim", "material", "draft"]
     id: str
     version: int
+    # Sentence evidence ids a kind="claim" ref cites (ADR 0017): the egress
+    # lineage records exactly which stored evidence rows fed the prompt.
+    # Empty for material/draft refs and for pre-v7 claims without citations.
+    evidence_ids: list[str] = []
 
 
 class OutboundEnvelope(BaseModel):
@@ -261,6 +279,87 @@ def serialize_egress_event(
     return serialized
 
 
+def _screen_material_sources(store: EgressStore, source_refs: list[SourceRef]) -> None:
+    """R13 defense in depth (ADR 0013): re-screen material-derived text.
+
+    Only text that originates from stored materials is screened — claim text
+    (quotes from material passages) and material passage quotes referenced by
+    ``source_refs``. The clinician's own typed instructions and section text
+    are *not* screened: that is her writing, not uploaded test content. Any
+    match, or any checker error, refuses the prepare (fail-closed) before
+    anything is persisted. A missing source ref (KeyError) propagates
+    unchanged so the existing stale/missing-ref handling applies; stores that
+    cannot resolve refs at all (the JSON adapter) fall back to screening the
+    prompt itself — see :func:`_screen_prompt_material_text`.
+    """
+    from psychtool.core.protected import is_protected
+
+    texts: list[str] = []
+    for ref in source_refs:
+        if ref.kind == "claim":
+            try:
+                claim = store.get_claim_version(ref.id, ref.version)
+            except KeyError:
+                # Missing ref: existing missing/stale handling deals with it.
+                continue
+            except Exception:
+                raise EgressProtectedContentError(
+                    "protected-content check failed during egress preparation"
+                ) from None
+            texts.append(claim.text)
+            # ADR 0017: the cited sentence evidence is material-derived text
+            # too — screen the stored quotes, not only the claim's own text.
+            try:
+                texts.extend(store.evidence_quotes_for(ref.evidence_ids))
+            except Exception:
+                raise EgressProtectedContentError(
+                    "protected-content check failed during egress preparation"
+                ) from None
+        elif ref.kind == "material":
+            try:
+                material = store.get_material(ref.id, ref.version)
+            except KeyError:
+                continue
+            except Exception:
+                raise EgressProtectedContentError(
+                    "protected-content check failed during egress preparation"
+                ) from None
+            texts.extend(passage.text for passage in material.passages)
+    try:
+        hit = any(is_protected(text) for text in texts)
+    except Exception:
+        raise EgressProtectedContentError(
+            "protected-content check failed during egress preparation"
+        ) from None
+    if hit:
+        raise EgressProtectedContentError(
+            "egress refused: source material matches the protected-content screen"
+        )
+
+
+def _screen_prompt_material_text(prompt: str) -> None:
+    """R13 defense in depth for the JSON-workspace path (ADR 0013).
+
+    JSON workspaces expose no claim/material getter through the egress store
+    protocol, so the material-derived portion of the prompt itself is
+    screened: claim quotes and material passages are the only uploaded text
+    that reaches the envelope. A match or a checker error refuses the
+    prepare; nothing is persisted.
+    """
+    from psychtool.core.protected import is_protected
+
+    try:
+        hit = is_protected(prompt)
+    except Exception:
+        raise EgressProtectedContentError(
+            "protected-content check failed during egress preparation"
+        ) from None
+    if hit:
+        raise EgressProtectedContentError(
+            "egress refused: source material matches the protected-content screen"
+        )
+
+
 def prepare_egress_request(
     workspace: EgressTarget,
     *,
@@ -273,8 +372,12 @@ def prepare_egress_request(
     store = _as_egress_store(workspace)
     if isinstance(store, JsonDirStore):
         known_names = get_known_names(store.workspace)
+        # JSON workspaces: screen the material-derived prompt text itself.
+        _screen_prompt_material_text(prompt)
     else:
         known_names = store.get_known_names()
+        # SQLite store: screen the stored claim/material text behind the refs.
+        _screen_material_sources(store, source_refs)
     redacted_prompt, token_map = redact_text(prompt, known_names=known_names)
 
     identifier_categories: set[str] = set()

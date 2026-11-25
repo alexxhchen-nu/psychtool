@@ -1,11 +1,15 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { apiRequest, createCase, jsonRequest, workspaceUrl } from './api'
-import type { Claim, ClaimSuggestion, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
+import { apiRequest, createCase, getWorkspace, jsonRequest, workspaceUrl } from './api'
+import type { Claim, ClaimSuggestion, EvidenceInvalidation, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
 import { validateCaseId } from './case-form'
+import { citedEvidenceLine } from './claims'
+import { applyInvalidationToSections } from './correction'
 import MaterialUploadPanel from './components/MaterialUploadPanel'
 import PasteMaterialPanel from './components/PasteMaterialPanel'
+import DimensionsPanel from './components/DimensionsPanel'
 import EgressReviewPanel from './components/EgressReviewPanel'
+import EvidencePanel from './components/EvidencePanel'
 import './App.css'
 
 export const PRIVACY_BANNER = 'Please note: This prototype is not HIPAA compliant yet. Do not enter real patient information. Use only synthetic or separately approved practice materials.'
@@ -127,14 +131,33 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
   const [showPaste, setShowPaste] = useState(false)
   const [showIntake, setShowIntake] = useState(false)
   const [showNames, setShowNames] = useState(false)
+  const [showEvidence, setShowEvidence] = useState(false)
+  const [showDimensions, setShowDimensions] = useState(false)
   const [error, setError] = useState('')
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [sourceRevision, setSourceRevision] = useState(0)
+  const [syntheticConfirmed, setSyntheticConfirmed] = useState(false)
+  // PT-09 (R6 / ADR 0018): the exact server toast after a correction. The
+  // toast is rendered verbatim; the client never invents counts.
+  const [correctionToast, setCorrectionToast] = useState('')
   const alive = useRef(false)
   const mutation = useRef(false)
   const base = workspaceUrl(workspaceId)
   const changeBusy = useCallback((value: boolean) => { mutation.current = value; setBusy(value); onBusyChange(value) }, [onBusyChange])
+
+  // R6: a correction in the Evidence or Dimensions panel cascades on the
+  // server in one transaction. Here we only (1) show the server's toast,
+  // (2) flip the status pill of an open APPROVED section the server returned
+  // to needs_review, and (3) bump sourceRevision so the egress panel notices
+  // an invalidated request. The section editor's textarea value is local
+  // state and is NEVER rewritten from here.
+  const correctionApplied = useCallback((toast: string, invalidation: EvidenceInvalidation) => {
+    if (!alive.current) return
+    setCorrectionToast(toast)
+    setSections((items) => applyInvalidationToSections(items, invalidation))
+    if (invalidation.egress.length > 0) setSourceRevision((value) => value + 1)
+  }, [])
 
   useEffect(() => {
     alive.current = true
@@ -142,14 +165,16 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
     Promise.all([
       apiRequest<SectionState[]>(`${base}/sections?template_id=${encodeURIComponent(template.template_id)}`),
       apiRequest<Claim[]>(`${base}/claims`), apiRequest<Material[]>(`${base}/materials`), apiRequest<{ names: string[] }>(`${base}/names`),
-    ]).then(([states, claimData, materialData, nameData]) => {
+      getWorkspace(workspaceId),
+    ]).then(([states, claimData, materialData, nameData, detail]) => {
       if (!active) return
       setSections(states); setClaims(claimData); setMaterials(materialData)
       setMaterialId(materialData[0]?.id ?? '')
       setNames(nameData.names); setNamesText(nameData.names.join('\n')); setReady(true)
+      setSyntheticConfirmed(detail.synthetic_confirmed)
     }).catch(() => { if (active) setError('Could not load the case. Reload to try again.') })
     return () => { active = false; alive.current = false }
-  }, [base, template.template_id])
+  }, [base, template.template_id, workspaceId])
 
   async function refreshSources() {
     const [claimData, materialData] = await Promise.all([apiRequest<Claim[]>(`${base}/claims`), apiRequest<Material[]>(`${base}/materials`)])
@@ -210,12 +235,15 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showUpload} onClick={() => { setShowUpload(!showUpload); setShowPaste(false) }}>Upload material</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showPaste} onClick={() => { setShowPaste(!showPaste); setShowUpload(false) }}>Paste synthetic text</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showIntake} onClick={() => setShowIntake(!showIntake)}>Review intake claims</button>
+        <button className="ghost-button" disabled={busy || !ready} aria-expanded={showEvidence} onClick={() => setShowEvidence(!showEvidence)}>Evidence</button>
+        <button className="ghost-button" disabled={busy || !ready} aria-expanded={showDimensions} onClick={() => setShowDimensions(!showDimensions)}>Dimensions</button>
         <button className="ghost-button" disabled={busy || !ready} aria-expanded={showNames} onClick={() => setShowNames(!showNames)}>Identifying info</button>
       </div>
     </section>
     {error && <div className="error-banner" role="alert">{error}</div>}
+    {correctionToast && <div className="correction-toast" role="status" data-testid="correction-toast">{correctionToast}</div>}
     {!ready && !error && <p role="status">Loading case…</p>}
-    {ready && <div hidden={!showUpload}><fieldset className="upload-lock" disabled={busy}><MaterialUploadPanel workspaceId={workspaceId} onUploaded={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset></div>}
+    {ready && <div hidden={!showUpload}><fieldset className="upload-lock" disabled={busy}><MaterialUploadPanel workspaceId={workspaceId} confirmed={syntheticConfirmed} onConfirmed={() => setSyntheticConfirmed(true)} onUploaded={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset></div>}
     {ready && showPaste && <fieldset className="upload-lock" disabled={busy}><PasteMaterialPanel workspaceId={workspaceId} onPasted={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset>}
     {showIntake && <section className="names-panel intake-panel" aria-label="Intake claim review">
       <div className="names-panel-copy"><h3>Review each source passage.</h3><p>Assign topic, category and attribution before accepting. These are passage candidates, not diagnostic conclusions.</p></div>
@@ -233,6 +261,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
         {suggestionsLoaded && !suggestions.length && <p role="status">No remaining candidates. Accepted claims are available in the section editor.</p>}
         {suggestions.map((item, index) => <div className="intake-card" key={item.id}>
           <p className="field-label">{item.source_document_id} v{item.source_version} / {item.source_passage_id}</p><p>{item.source_text}</p>
+          <p className="field-label" data-testid="cited-evidence-ids">{citedEvidenceLine(item.evidence_ids)}</p>
           <label className="field-label">Claim text<textarea className="editor-input" value={item.text} disabled={busy} onChange={(event) => updateSuggestion(index, { text: event.target.value })} /></label>
           <div className="editor-controls"><label className="field-label">Topic<input className="text-input" disabled={busy} value={item.topic} onChange={(event) => updateSuggestion(index, { topic: event.target.value })} /></label>
             <label className="field-label">Category<input className="text-input" disabled={busy} value={item.category} onChange={(event) => updateSuggestion(index, { category: event.target.value })} /></label></div>
@@ -245,6 +274,8 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
       <label className="field-label">Identifying names ({names.length} saved)<textarea className="names-input" rows={5} value={namesText} disabled={busy} onChange={(event) => setNamesText(event.target.value)} /></label>
       <button className="primary-button" disabled={busy} onClick={saveNames}>Save names</button>
     </section>}
+    {ready && showEvidence && <EvidencePanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} onCorrection={correctionApplied} />}
+    {ready && showDimensions && <DimensionsPanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} syntheticConfirmed={syntheticConfirmed} onCorrection={correctionApplied} />}
     {ready && selected && selectedState && <div className="report-grid">
       <aside className="section-rail" aria-label="Report sections"><div className="rail-heading"><span>Document map</span><strong>{template.sections.length} sections</strong></div>
         <ol>{template.sections.map((section, index) => {
@@ -280,6 +311,22 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
   const inFlight = useRef(false)
   const alive = useRef(false)
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+  // R6 (PT-09 / ADR 0018): when a correction returns this open APPROVED
+  // section to needs_review on the server, the pill follows — but ONLY the
+  // status. The textarea keeps her unsaved text (form.text is never synced
+  // from `initial`), and the editor is never remounted for this.
+  useEffect(() => {
+    if (initial.status !== 'needs_review') return
+    let flipped = false
+    setForm((current) => {
+      if (current.status !== 'approved') return current
+      flipped = true
+      return { ...current, status: 'needs_review' }
+    })
+    if (flipped) {
+      setMessage('A source correction returned this section to Needs review. Your unsaved text was not changed.')
+    }
+  }, [initial.status])
   const generated = useCallback((text: string, claimIds: string[]) => {
     if (!alive.current) return
     setForm((current) => ({ ...current, text, claimIds, status: 'draft', reviewer: '' }))

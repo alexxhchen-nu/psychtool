@@ -11,11 +11,13 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from psychtool.core.extract import RuleExtractor
 from psychtool.core.workspace import Passage
 from psychtool.server.app import create_app
 from psychtool.store.sqlite_store import SqliteStore, UnknownCaseError
+from tests.conftest import build_client
 
-B_MARKER = "B-ONLY-MARKER-STRING-9f2c"
+B_MARKER = "B-ONLY-MARKER-STRING-9f2c is here."
 
 
 @pytest.fixture
@@ -30,6 +32,8 @@ def seeded(tmp_path, monkeypatch):
             material_id="m1", title=f"{case_id} intake", provider="self",
             date="2026-11-01", passages=[Passage(id="p001", text=text)],
         )
+        # Suggestions cite stored sentence evidence (ADR 0017), so seed it.
+        case.refresh_evidence(RuleExtractor())
         case.add_claim(
             claim_id=f"{case_id}-claim",
             source_document_id="m1",
@@ -43,7 +47,7 @@ def seeded(tmp_path, monkeypatch):
             text=text,
         )
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(db_path))
-    return TestClient(create_app()), store
+    return build_client(create_app()), store
 
 
 def test_overlapping_material_ids_stay_separate(seeded):
@@ -253,7 +257,7 @@ def test_r3_ac1_similar_materials_never_leak_b_content(tmp_path, monkeypatch):
     never the marker string that only exists in case B."""
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
     monkeypatch.setenv("PSYCHTOOL_DATA_TIER", "synthetic")
-    client = TestClient(create_app())
+    client = build_client(create_app())
 
     a_text = "Synthetic intake note: sleep improved after the schedule change."
     b_text = "Synthetic intake note: sleep improved after the schedule change. " + B_MARKER
@@ -330,7 +334,7 @@ def test_r1_ac2_switching_cases_shows_only_current_case_data(tmp_path, monkeypat
     routes), materials, claims and sections returned are exactly the current
     case's data."""
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
-    client = TestClient(create_app())
+    client = build_client(create_app())
 
     texts = {"case-a": "Alpha synthetic paragraph.", "case-b": "Beta synthetic paragraph."}
     for case_id, text in texts.items():

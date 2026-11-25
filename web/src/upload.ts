@@ -2,8 +2,16 @@ import { ApiError } from './api'
 import type { UploadResult } from './types'
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-export const UPLOAD_ACCEPT = '.txt,.md,.pdf,.png,.jpg,.jpeg'
+// M1 server rules (ADR 0012): text and Markdown only; scans go through no
+// OCR on the server, so the picker never offers them.
+export const UPLOAD_ACCEPT = '.txt,.md'
 const supportedExtensions = new Set(UPLOAD_ACCEPT.split(','))
+const scanExtensions = new Set(['.pdf', '.png', '.jpg', '.jpeg'])
+
+export const SCAN_NOT_SUPPORTED_MESSAGE =
+  'Scanned PDFs and images are not supported in this version. Upload a .txt or .md file.'
+export const UNSUPPORTED_TYPE_MESSAGE = 'Only .txt and .md files are supported. Upload a .txt or .md file.'
+export const TOO_LARGE_MESSAGE = 'The file is too large. The limit is 10 MiB (10,485,760 bytes).'
 
 export interface MaterialUploadFields {
   file: Pick<File, 'name' | 'size'> | null
@@ -21,10 +29,12 @@ export function validateMaterialUpload(fields: MaterialUploadFields): UploadFiel
   } else {
     const dot = fields.file.name.lastIndexOf('.')
     const extension = dot > 0 ? fields.file.name.slice(dot).toLowerCase() : ''
-    if (!supportedExtensions.has(extension)) {
-      errors.file = 'Choose a .txt, .md, .pdf, .png, .jpg or .jpeg file.'
+    if (scanExtensions.has(extension)) {
+      errors.file = SCAN_NOT_SUPPORTED_MESSAGE
+    } else if (!supportedExtensions.has(extension)) {
+      errors.file = UNSUPPORTED_TYPE_MESSAGE
     } else if (fields.file.size > MAX_UPLOAD_BYTES) {
-      errors.file = 'Choose a file no larger than 10 MiB (10,485,760 bytes).'
+      errors.file = TOO_LARGE_MESSAGE
     }
   }
   if (fields.materialId.length < 1 || fields.materialId.length > 64 || /[^A-Za-z0-9_-]/.test(fields.materialId)) {
@@ -52,8 +62,28 @@ export function summarizeUpload(result: UploadResult): UploadSummary {
   }
 }
 
+/**
+ * R13 (ADR 0013): the held-back notice for paragraphs the protected-content
+ * screen dropped before storage. Fixed wording, singular/plural by count;
+ * it never mentions filenames, titles or any text from the upload.
+ */
+export function heldBackNotice(count: number | undefined | null): string | null {
+  if (!count || count < 1) return null
+  if (count === 1) {
+    return '1 paragraph held back: it appears to contain test items, norms or scoring rules. '
+      + 'It was not added to this case and will never be sent to the AI assistant. '
+      + 'A way to request release will come in a later version.'
+  }
+  return `${count} paragraphs held back: they appear to contain test items, norms or scoring rules. `
+    + 'They were not added to this case and will never be sent to the AI assistant. '
+    + 'A way to request release will come in a later version.'
+}
+
 export function uploadErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
+    // The server's fixed rejection message is safe to show verbatim: it is a
+    // constant chosen from a small allowlist and never quotes user input.
+    if (error.serverMessage) return error.serverMessage
     switch (error.status) {
       case 0:
         return 'The upload could not be confirmed. The server may have received the file; check the material list before trying again.'
@@ -64,12 +94,14 @@ export function uploadErrorMessage(error: unknown): string {
         return 'The server did not allow this upload. Ask an administrator to check access.'
       case 404:
         return 'The workspace could not be found. Reopen the workspace before uploading.'
+      case 409:
+        return 'Confirm that this case uses only synthetic or separately approved materials before uploading.'
       case 413:
-        return 'The file is too large. Choose a file no larger than 10 MiB (10,485,760 bytes).'
+        return TOO_LARGE_MESSAGE
       case 415:
-        return 'This file type is not supported. Choose a .txt, .md, .pdf, .png, .jpg or .jpeg file.'
+        return UNSUPPORTED_TYPE_MESSAGE
       case 503:
-        return 'OCR is unavailable on the server; its support may not be installed. Ask an administrator to check OCR, or upload a .txt or .md file.'
+        return 'The upload service is unavailable. Ask an administrator to check the server, or try again later.'
     }
   }
   return 'The upload could not be confirmed. Check the material list before trying again.'

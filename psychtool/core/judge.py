@@ -91,7 +91,12 @@ def judge_draft(
         prompt = build_judge_prompt(c.statement, locator, draft.text)
         source_refs = [
             SourceRef(kind="draft", id=draft.id, version=draft.version),
-            SourceRef(kind="claim", id=claim.id, version=claim.version),
+            SourceRef(
+                kind="claim",
+                id=claim.id,
+                version=claim.version,
+                evidence_ids=list(claim.evidence_ids),
+            ),
         ]
         output = runner.run(
             workspace=workspace,

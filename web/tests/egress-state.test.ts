@@ -7,6 +7,7 @@ import {
   initialEgressState,
   readStoredRequestId,
   requestStorageKey,
+  sendInterruptedMessage,
   storeRequestId,
   validateRecoveredRequest,
 } from '../src/egress-state'
@@ -246,7 +247,44 @@ describe('request ID storage safety', () => {
     const storage = memoryStorage()
     expect(storeRequestId(storage, 'key', ' ')).toBe(false)
     expect(storage.getItem('key')).toBeNull()
-    const silent: RequestStorage = { getItem: () => null, setItem() {}, removeItem() {} }
+    const silent: RequestStorage = { getItem: () => null, setItem: () => null, removeItem: () => null }
     expect(storeRequestId(silent, 'key', 'egress-1')).toBe(false)
+  })
+})
+
+describe('send_interrupted: crash-recovered request is terminal', () => {
+  const interrupted: EgressRequest = { ...request, status: 'send_interrupted' }
+
+  test('restoring an interrupted request enters the send_interrupted phase with the fixed label', () => {
+    const restoring = egressReducer(initialEgressState, { type: 'restore_start' })
+    const state = egressReducer(restoring, { type: 'restored', request: interrupted })
+    expect(state.phase).toBe('send_interrupted')
+    expect(state.message).toBe(sendInterruptedMessage)
+    expect(state.recovered).toBe(true)
+  })
+
+  test('an interrupted request is never sendable: no send action leaves the phase', () => {
+    const restoring = egressReducer(initialEgressState, { type: 'restore_start' })
+    const state = egressReducer(restoring, { type: 'restored', request: interrupted })
+    // send is only accepted from the approved phase; every other attempt is a no-op.
+    expect(egressReducer(state, { type: 'send', storageCleared: true }).phase).toBe('send_interrupted')
+    expect(egressReducer(state, { type: 'approve', confirmation }).phase).toBe('send_interrupted')
+  })
+
+  test('an interrupted request accepts a new prepare (the only way forward)', () => {
+    const restoring = egressReducer(initialEgressState, { type: 'restore_start' })
+    const state = egressReducer(restoring, { type: 'restored', request: interrupted })
+    expect(canPrepare(state, false)).toBe(true)
+    expect(egressReducer(state, { type: 'prepare', acknowledgeUncertain: false }).phase).toBe('preparing')
+  })
+
+  test('validateRecoveredRequest accepts send_interrupted so the panel can show it', () => {
+    expect(validateRecoveredRequest(interrupted, 'case-a', 'egress-1')).toBe(interrupted)
+    expect(validateRecoveredRequest(interrupted, 'case-b', 'egress-1')).toBeNull()
+    expect(validateRecoveredRequest(interrupted, 'case-a', 'other-id')).toBeNull()
+  })
+
+  test('the phase label tells the user exactly what to do', () => {
+    expect(sendInterruptedMessage).toBe('Send interrupted — prepare a new request.')
   })
 })

@@ -26,6 +26,13 @@ The repository holds requirements and boundaries, official privacy-source resear
 
 **Browser application (local prototype).** In addition to the CLI, the repository contains a local browser prototype: create a synthetic case, paste synthetic text (rule-based candidate extraction), approve generation requests through the egress gateway, save the output as a section, and find it again after reload. **It uses the offline FakeTransport model by default — no network, no API key**; a real endpoint is used only when `PSYCHTOOL_TRANSPORT=http` is set explicitly. The prototype is **not HIPAA compliant**, as the persistent in-page banner states; use synthetic data only.
 
+Material upload (ADR 0012): M1 accepts only `.txt` / `.md` (UTF-8, up to 10 MiB); scans and images get a fixed explanation (no OCR on the server); before the first upload, each case requires a one-time confirmation that only synthetic or separately approved materials are used. Protected test content blocking (ADR 0013): paragraphs that look like test items, norms or scoring rules are held back before any write (never stored, never sent to the model; the audit log records only a count and a hash; a checker failure rejects the whole upload), with no release path in M1.
+Evidence view (ADR 0014): the Evidence panel lists, on demand, full sentences extracted verbatim from the case's materials (with source material, version and paragraph); clicking an item shows the exact location in the source text. This is a checklist for the clinician's review, not a conclusion, and it is never written into the report automatically.
+Evidence categories (ADR 0015): each item carries a rule-based suggested category with a one-sentence reason quoting the matched source keyword (provider role recorded separately); evidence is persisted, and her category/role corrections survive rule re-runs via stable location-derived ids — still suggestions for her review, never a verdict.
+Dimension mapping (ADR 0016): dimension names come only from the list she uploaded (`kind=dims`); the product has no built-in official list or criteria text. Unsure matches are marked “Needs review” and never a guessed dimension. Every dimension view shows “This is not a diagnosis. The diagnosis is yours.” Her Confirm / Change / “Wrong, no dimension” choices persist on stable ids. Audit rows record only the allowlisted value she picked (a category key, a role key, or a dimension id) — never her text.
+Claim sources (ADR 0017): sentence evidence is the only source a claim cites — the `claim_evidence` junction table (schema v7) links each claim to the same-case active evidence rows behind it, with cross-case citation structurally blocked by foreign keys; the v6→v7 migration links existing evidence only and never invents any.
+Correction cascade (ADR 0018): when her category or dimension correction actually changes the effective value, citing verified claims return to pending, approved sections citing those claims return to Needs review, and unsent egress requests referencing the evidence are invalidated — all inside one SQLite transaction; saved claim and section text is never rewritten, and sent requests are never touched.
+
 The server/browser path stores cases in a **single SQLite database** (default `local-data/psychtool.db`, overridable via `PSYCHTOOL_DB_PATH`; ADR 0010), with composite primary keys and foreign keys enforcing per-case isolation at the database layer. The ADR 0005 JSON workspaces remain the format for the CLI/evaluation pipeline. Import an existing JSON workspace into the database:
 
 ```bash
@@ -37,12 +44,14 @@ cd web && bun install && bun run build   # build the frontend (FastAPI serves we
 cd .. && uv run psychtool-server         # open http://127.0.0.1:8000
 ```
 
+**Local security baseline (ADR 0011).** The server binds to loopback only (a non-loopback `PSYCHTOOL_HOST` refuses to start); every start mints a session token that all `/api/*` routes (except `GET /api/health`) require via `X-Psychtool-Token`; every response carries a strict CSP and hardening headers; startup self-checks refuse a database inside a cloud-sync folder (disk encryption warns only). The audit trail is an append-only, hash-chained `audit_log` table inside SQLite, written in the same transaction as the state change. **Dev note**: pages served by the server itself carry the token automatically; when using the Vite dev server, set the same `PSYCHTOOL_SESSION_TOKEN` (≥32 chars) for both the backend and the frontend proxy, or the API answers 401.
+
 Tests:
 
 ```bash
-uv run --extra dev pytest -q                          # backend
-cd web && bun test && bun run build                   # frontend unit tests + build
-cd web && bunx playwright install chromium && bun run e2e   # end-to-end (build web/dist first)
+uv run --extra dev pytest -q                          # backend (incl. test_security / test_selfcheck / test_audit_log / test_send_lock_recovery)
+cd web && bun test && bun run build                   # frontend unit tests (incl. api.ts token, send_interrupted state) + build
+cd web && bunx playwright install chromium && bun run e2e   # end-to-end (incl. security.e2e: CSP headers, no CSP console errors, tokenless 401)
 ```
 
 <div id="first-workflow"></div>

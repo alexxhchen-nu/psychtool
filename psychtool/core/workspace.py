@@ -35,6 +35,9 @@ class Material(BaseModel):
     provider: str
     date: str
     passages: list[Passage]
+    # ADR 0016: 'case' (clinical source material, the default everywhere) or
+    # 'dims' (her uploaded dimension list — never an evidence source).
+    kind: str = "case"
 
     @field_validator("provider")
     @classmethod
@@ -57,6 +60,17 @@ def _split_passages(text: str) -> list[Passage]:
 def split_passages(text: str) -> list[Passage]:
     """Public alias: split raw text into versioned passage blocks."""
     return _split_passages(text)
+
+
+def split_dimension_lines(text: str) -> list[Passage]:
+    """Split a dimension list into one passage per non-empty line.
+
+    The prototype treats each list line as its own paragraph (so
+    "Source: your list, paragraph n" can point at that line). Case
+    materials still use blank-line blocks via :func:`split_passages`.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return [Passage(id=f"p{i:03d}", text=line) for i, line in enumerate(lines, start=1)]
 
 
 def init_workspace(workspace: Path, *, case_id: str) -> Path:
@@ -97,10 +111,31 @@ def import_material(
     provider: str,
     date: str,
     text: str,
+    blocked_out: list[int] | None = None,
 ) -> Material:
+    """Write one versioned material, screening protected content first (R13).
+
+    Blocked passages are dropped and the kept ones renumbered from ``p001``
+    (a fresh JSON version has no claims yet, so renumbering is safe); the
+    number of dropped paragraphs is appended to ``blocked_out`` when given.
+    Raises ``ProtectedContentError("protected_content")`` when every passage
+    is blocked and ``ProtectedContentError("protected_check_failed")`` when
+    the screen itself errors — in both cases nothing is written.
+    """
+    from psychtool.core.protected import (
+        PROTECTED_CONTENT_REASON,
+        ProtectedContentError,
+        filter_protected_passages,
+    )
+
     workspace = Path(workspace)
     meta = json.loads(_meta_path(workspace).read_text(encoding="utf-8"))
     case_id = meta["case_id"]
+    passages, blocked_count, _ = filter_protected_passages(_split_passages(text))
+    if not passages:
+        raise ProtectedContentError(PROTECTED_CONTENT_REASON)
+    if blocked_out is not None:
+        blocked_out.append(blocked_count)
     version = latest_version(workspace, material_id) + 1
     material = Material(
         id=material_id,
@@ -109,7 +144,7 @@ def import_material(
         title=title,
         provider=provider,
         date=date,
-        passages=_split_passages(text),
+        passages=passages,
     )
     out = workspace / "materials" / f"{material_id}.v{version}.json"
     out.write_text(material.model_dump_json(indent=2), encoding="utf-8")

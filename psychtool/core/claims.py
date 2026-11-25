@@ -36,6 +36,10 @@ class Claim(BaseModel):
     topic: str
     text: str
     verification_status: VerificationStatus = "pending"
+    # Sentence-level evidence this claim cites (schema v7 / ADR 0017). The
+    # default stays empty so historical rows migrated from pre-v7 databases —
+    # and file-workspace claims that never recorded ids — load unchanged.
+    evidence_ids: list[str] = Field(default_factory=list)
 
     @field_validator("provider_role")
     @classmethod

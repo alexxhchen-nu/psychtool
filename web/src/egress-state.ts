@@ -1,7 +1,7 @@
 import type { ApprovalInput, EgressRequest } from './types'
 
 export type EgressPhase = 'restoring' | 'idle' | 'preparing' | 'prepared' | 'approving' | 'approved'
-  | 'sending' | 'sent' | 'invalidated' | 'output_blocked' | 'uncertain_failure' | 'error'
+  | 'sending' | 'sent' | 'invalidated' | 'send_interrupted' | 'output_blocked' | 'uncertain_failure' | 'error'
 
 export interface EgressState {
   phase: EgressPhase
@@ -39,6 +39,7 @@ export const initialEgressState: EgressState = {
 const staleMessage = 'This request is no longer current. Prepare a new request and review its exact input again.'
 const uncertainMessage = 'Delivery is uncertain: the model may already have received this request. Do not resend it. Contact an administrator before choosing to prepare a new request.'
 const restoredSentMessage = 'This request was already sent. Recovery cannot recover the generated text or resend this request. Check your saved section; a new generation requires a new request.'
+export const sendInterruptedMessage = 'Send interrupted — prepare a new request.'
 
 export function approvalInput(request: EgressRequest, confirmation: ReviewConfirmation): ApprovalInput | null {
   if (!confirmation.confirmed || !request.content_hash) return null
@@ -78,6 +79,9 @@ export function egressReducer(state: EgressState, action: EgressAction): EgressS
       if (state.phase !== 'restoring') return state
       if (!action.request) return { phase: 'idle', request: null, message: null, recovered: false }
       if (action.request.status === 'invalidated') return invalidated({ ...state, request: null })
+      if (action.request.status === 'send_interrupted') {
+        return { phase: 'send_interrupted', request: action.request, message: sendInterruptedMessage, recovered: true }
+      }
       return {
         phase: action.request.status, request: action.request, recovered: true,
         message: action.request.status === 'sent' ? restoredSentMessage : 'Request restored. Review the exact input and its sources before continuing.',
@@ -150,7 +154,8 @@ export function egressReducer(state: EgressState, action: EgressAction): EgressS
 
 export function validateRecoveredRequest(request: EgressRequest | null, workspaceId: string, requestId: string): EgressRequest | null {
   if (!request || request.workspace_id !== workspaceId || request.purpose !== 'section_generation'
-    || request.request_id !== requestId || !['prepared', 'approved', 'sent'].includes(request.status)) return null
+    || request.request_id !== requestId
+    || !['prepared', 'approved', 'sent', 'send_interrupted'].includes(request.status)) return null
   return request
 }
 

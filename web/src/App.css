@@ -1,4 +1,6 @@
-﻿@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap');
+﻿/* No remote font import: the strict CSP (ADR 0011) allows only 'self', and
+   the app makes no network calls besides its own API. The named fonts are
+   used when installed locally; otherwise the system stacks below apply. */
 
 :root {
   --paper: #f8f9f6;
@@ -13,9 +15,9 @@
   --blue: #345b8c;
   --radius-control: 8px;
   --radius-panel: 16px;
-  --font-body: 'Manrope', sans-serif;
+  --font-body: 'Manrope', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-document: 'Newsreader', Georgia, serif;
-  --font-data: 'DM Mono', monospace;
+  --font-data: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -125,10 +127,39 @@ button:disabled, .primary-button:disabled, .secondary-button:disabled, .review-p
 .review-panel small { display: block; margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.65; }
 
 .error-banner { padding: 16px 20px; margin-bottom: 20px; color: #822e24; border: 1px solid #d6a59c; border-radius: var(--radius-control); background: #fff0ec; overflow-wrap: anywhere; }
+/* PT-09 (R6 / ADR 0018): the server's correction toast, shown verbatim. */
+.correction-toast { padding: 16px 20px; margin-bottom: 20px; color: #1f3d2b; border: 1px solid #b9cdbf; border-radius: var(--radius-control); background: #eef5ef; overflow-wrap: anywhere; }
+.held-back-notice { grid-column: 1 / -1; padding: 16px 20px; margin: 0; color: #5a4400; border: 1px solid #d9c48a; border-radius: var(--radius-control); background: #fdf6e3; overflow-wrap: anywhere; }
 .names-panel { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 24px; align-items: end; padding: 24px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--white); }
 .names-panel > * { min-width: 0; }
 .names-panel-copy h3 { margin: 0 0 12px; font: 500 26px/1.2 var(--font-document); }
 .names-panel-copy p { margin: 0; max-width: 70ch; color: var(--muted); font-size: 14px; }
+/* R5 (ADR 0015): evidence chips, reason line and correction selects. */
+.evidence-list { display: grid; gap: 12px; padding: 0; list-style: none; }
+.evidence-item { display: grid; gap: 6px; width: 100%; padding: 12px 16px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--paper); text-align: left; cursor: pointer; }
+.evidence-quote { overflow-wrap: anywhere; }
+.evidence-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.evidence-chip { padding: 2px 10px; border: 1px solid var(--forest); border-radius: 999px; color: var(--forest); font-size: 12px; }
+.evidence-chip.uncategorized { border-style: dashed; color: var(--muted); }
+.evidence-reason, .evidence-set-by { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.evidence-source-line { color: var(--muted); font-size: 12px; }
+.evidence-choice-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; padding: 0 4px 8px; }
+.evidence-choice { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.evidence-choice select { padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--white); color: var(--ink); font: inherit; }
+.evidence-source { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--white); }
+.evidence-source h4 { margin: 0 0 12px; font: 500 16px/1.3 var(--font-document); }
+.evidence-passages { display: grid; gap: 8px; }
+.evidence-passage { margin: 0; color: var(--ink); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.evidence-passage.highlighted { background: var(--paper); border-radius: var(--radius-control); padding: 4px 8px; }
+.evidence-passage mark { background: #ffe9a8; border-radius: 2px; padding: 0 1px; }
+.dimensions-panel { grid-template-columns: 1fr; align-items: start; }
+.dimensions-panel .names-panel-copy { max-width: 80ch; }
+.dimension-group { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dimension-group-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.dimension-group-header .ghost-button { margin-left: auto; font-size: 12px; }
+.dimension-row { margin-bottom: 8px; }
+.dimension-chip { border-color: var(--ink); color: var(--ink); }
+.muted { color: var(--muted); font-size: 13px; }
 .intake-panel { grid-template-columns: 1fr 1fr; align-items: start; }
 .intake-panel .field-label { margin-bottom: 16px; }
 .intake-suggestions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 24px; }

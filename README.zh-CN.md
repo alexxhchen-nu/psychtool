@@ -26,6 +26,13 @@ psychtool 是一个帮助个人写报告的临床写作工作区，目标用户�
 
 **浏览器应用（本地原型）。** 除 CLI 外，本仓库另含本机浏览器原型：创建合成个案、粘贴合成文字（规则式抽取候选陈述）、人工批准后经由网关送出生成请求、把产出存为段落，刷新后仍在。**默认使用离线 FakeTransport 模型，不联网、不需要 API 密钥**；只有明确设置 `PSYCHTOOL_TRANSPORT=http` 才会走真实端点。原型**尚未符合 HIPAA**，页面常驻横幅亦如此提示；仅用合成数据。
 
+材料上传（ADR 0012）：M1 仅接受 `.txt`／`.md`（UTF-8，上限 10 MiB）；扫描件与图片会得到固定说明（服务器端无 OCR）；首次上传前每个个案需勾选确认一次“仅用合成或已另行核准的材料”。保护性测验内容阻挡（ADR 0013）：疑似测验原题、常模或计分规则的段落在任何写入前被扣留（永不入库、永不送入模型；审计只记计数与哈希；检查器失败时整笔拒绝），M1 无释放通道。
+证据视图（ADR 0014）：Evidence 面板实时列出个案材料中逐字提取的完整句子（含来源材料、版本与段落），点击可核对原文出处；这是核对用的清单而非结论，永不会自动写入报告。
+证据分类（ADR 0015）：每条证据附规则式建议分类与一句引用原文关键词的理由（来源角色分开记录），证据落库保存；她可随时改分类／角色，更正以稳定 id 落库、规则重跑永不覆盖——仍是给她核对的建议，不是判定。
+向度对照（ADR 0016）：向度名称只来自她上传的清单（`kind=dims`），系统没有内建官方向度或准则；比对不确定时标 “Needs review”、从不猜一个向度；每个向度画面都写 “This is not a diagnosis. The diagnosis is yours.”。她的确认／更改／“Wrong, no dimension” 以稳定 id 落库。审计行只记录她选的白名单值（分类键、角色键，或向度 id），从不记录她的文字。
+陈述来源（ADR 0017）：句子证据是陈述唯一的来源——`claim_evidence` 连结表（schema v7）把每条陈述明确连到它引用的同案 active 证据列，跨案引用由外键结构性阻挡；v6→v7 迁移只连结既有证据、从不凭空创造。
+更正连锁（ADR 0018）：她改分类或向度而有效值真的改变时，引用该证据的 verified 陈述回到 pending、引用这些陈述的 approved 段落回到 Needs review、引用该证据的未送出 egress 请求作废——全部在同一笔 SQLite 事务内完成；陈述与段落的已存文字逐字不动，已送出（sent）的请求永不动。
+
 服务器／浏览器路径的个案存储为**单一 SQLite 数据库**（默认 `local-data/psychtool.db`，可用 `PSYCHTOOL_DB_PATH` 覆盖；ADR 0010），以复合主键与外键在数据库层强制个案隔离；ADR 0005 的 JSON 工作区仍是 CLI／评测链路的格式。把既有 JSON 工作区导入数据库：
 
 ```bash
@@ -37,12 +44,14 @@ cd web && bun install && bun run build   # 构建前端（FastAPI 直接提供 w
 cd .. && uv run psychtool-server         # 打开 http://127.0.0.1:8000
 ```
 
+**本地安全基线（ADR 0011）。** 服务器仅绑定 loopback（非 loopback 的 `PSYCHTOOL_HOST` 拒绝启动）；每次启动产生一组会话令牌，所有 `/api/*`（除 `GET /api/health`）需带 `X-Psychtool-Token`；每个响应带严格 CSP 与安全标头；启动自检拒绝把数据库放进云同步文件夹（磁盘加密仅警告）。审计日志为 SQLite 内仅追加、哈希链保护的 `audit_log` 表，与状态变更同一事务写入。**开发提示**：直接打开服务器提供的页面即自动带令牌；用 Vite dev server 时，须把同一组 `PSYCHTOOL_SESSION_TOKEN`（≥32 字符）设给后端与前端 proxy，否则 API 返回 401。
+
 测试：
 
 ```bash
-uv run --extra dev pytest -q                          # 后端
-cd web && bun test && bun run build                   # 前端单元测试 + 构建
-cd web && bunx playwright install chromium && bun run e2e   # 端到端（需先构建 web/dist）
+uv run --extra dev pytest -q                          # 后端（含 test_security / test_selfcheck / test_audit_log / test_send_lock_recovery）
+cd web && bun test && bun run build                   # 前端单元测试（含 api.ts 令牌、send_interrupted 状态）+ 构建
+cd web && bunx playwright install chromium && bun run e2e   # 端到端（含 security.e2e：CSP 标头、无 CSP console 错误、无令牌 401）
 ```
 
 <div id="first-workflow"></div>

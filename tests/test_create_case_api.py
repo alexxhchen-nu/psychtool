@@ -4,12 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from psychtool.server.app import create_app
+from tests.conftest import build_client
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("PSYCHTOOL_DB_PATH", str(tmp_path / "psychtool.db"))
-    return TestClient(create_app())
+    return build_client(create_app())
 
 
 def test_create_case_creates_workspace(client, tmp_path):

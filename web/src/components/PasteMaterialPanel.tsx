@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { pasteMaterial } from '../api'
+import { ApiError, pasteMaterial } from '../api'
 import type { UploadResult } from '../types'
 import { validatePaste } from '../case-form'
 import type { PasteFieldErrors } from '../case-form'
-import { summarizeUpload } from '../upload'
+import { heldBackNotice, summarizeUpload, uploadErrorMessage } from '../upload'
 import type { UploadSummary } from '../upload'
 
 interface PasteMaterialPanelProps {
@@ -25,6 +25,7 @@ export default function PasteMaterialPanel({ workspaceId, onPasted, onReview, on
   const [fieldErrors, setFieldErrors] = useState<PasteFieldErrors>({})
   const [error, setError] = useState('')
   const [result, setResult] = useState<UploadSummary | null>(null)
+  const [heldBack, setHeldBack] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const lifecycle = useRef<symbol | null>(null)
@@ -51,6 +52,7 @@ export default function PasteMaterialPanel({ workspaceId, onPasted, onReview, on
     busyRef.current = true
     setBusy(true)
     setResult(null)
+    setHeldBack(null)
     const isCurrent = () => lifecycle.current === currentLifecycle
     try {
       onBusyChange(true)
@@ -64,6 +66,9 @@ export default function PasteMaterialPanel({ workspaceId, onPasted, onReview, on
       })
       if (!isCurrent()) return
       setResult(summarizeUpload(uploaded))
+      // R13 (ADR 0013): same held-back notice as the file upload; no
+      // release/override action exists in M1.
+      setHeldBack(heldBackNotice(uploaded.blocked_paragraphs))
       try {
         await onPasted(uploaded)
       } catch {
@@ -71,8 +76,15 @@ export default function PasteMaterialPanel({ workspaceId, onPasted, onReview, on
           setError('The material was saved, but the material list could not refresh. Reopen the workspace before pasting it again.')
         }
       }
-    } catch {
-      if (isCurrent()) setError('The pasted text could not be saved. Check the fields and try again.')
+    } catch (cause) {
+      // Surface the server's fixed {detail, reason} message when present
+      // (type/size rejections and the R13 protected-content reasons),
+      // exactly like the file upload panel.
+      if (isCurrent()) {
+        setError(cause instanceof ApiError && cause.serverMessage
+          ? uploadErrorMessage(cause)
+          : 'The pasted text could not be saved. Check the fields and try again.')
+      }
     } finally {
       if (isCurrent()) {
         busyRef.current = false
@@ -189,6 +201,9 @@ export default function PasteMaterialPanel({ workspaceId, onPasted, onReview, on
         </button>
       </form>
       {error && <p className="error-banner" role="alert">{error}</p>}
+      {heldBack && (
+        <p className="held-back-notice" role="status" data-testid="held-back-notice">{heldBack}</p>
+      )}
       {result && (
         <div className="upload-result">
           <div role="status" aria-live="polite">

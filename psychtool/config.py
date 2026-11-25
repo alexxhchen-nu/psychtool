@@ -26,6 +26,7 @@ ENV_DATA_TIER = "PSYCHTOOL_DATA_TIER"
 ENV_API_KEY = "PSYCHTOOL_API_KEY"
 ENV_REDACT = "PSYCHTOOL_REDACT"
 ENV_TRANSPORT = "PSYCHTOOL_TRANSPORT"
+ENV_DEBUG_TRACEBACKS = "PSYCHTOOL_DEBUG_TRACEBACKS"
 
 DEFAULT_DATA_TIER: DataTier = "synthetic"
 
@@ -46,6 +47,10 @@ class Config(BaseModel):
     api_key: str | None = None
     redact: bool = False
     transport: TransportMode = DEFAULT_TRANSPORT
+    # Dev-only escape hatch (ADR 0013): when True, unhandled errors log full
+    # tracebacks (which may quote request text). Only ever True for the
+    # synthetic tier; main() refuses to start with the real tier.
+    debug_tracebacks: bool = False
 
 
 def _as_bool(value: str) -> bool:
@@ -83,6 +88,14 @@ def load_config(path: Path | str | None = None) -> Config:
     # network-capable transport, so anything but "http" falls back to "fake".
     if transport != "http":
         transport = DEFAULT_TRANSPORT
+    # The debug-tracebacks switch is deliberately narrow: only the literal
+    # value "1" enables it (a typo like "yes" stays off), and the real tier
+    # never gets tracebacks regardless (see server/main.py, ADR 0013).
+    debug_tracebacks = (
+        os.environ.get(ENV_DEBUG_TRACEBACKS) == "1"
+        and os.environ.get(ENV_DATA_TIER, file_cfg.get("data_tier", DEFAULT_DATA_TIER))
+        != "real"
+    )
 
     return Config(
         base_url=base_url,
@@ -92,4 +105,21 @@ def load_config(path: Path | str | None = None) -> Config:
         api_key=api_key,
         redact=redact,
         transport=transport,  # type: ignore[arg-type]
+        debug_tracebacks=debug_tracebacks,
+    )
+
+
+def debug_tracebacks_enabled(config: Config) -> bool:
+    """Single decider for the dev-only traceback switch (ADR 0013).
+
+    True only when ``PSYCHTOOL_DEBUG_TRACEBACKS=1`` was set AND the data tier
+    is synthetic. The env var is re-read here (not only in ``load_config``) so
+    a hand-built ``Config`` cannot sneak tracebacks past the tier check; the
+    flag on the model is honoured only as a second confirmation. Fail-closed:
+    any doubt means False.
+    """
+    return (
+        config.debug_tracebacks
+        and config.data_tier == "synthetic"
+        and os.environ.get(ENV_DEBUG_TRACEBACKS) == "1"
     )

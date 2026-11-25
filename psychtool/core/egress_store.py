@@ -186,6 +186,15 @@ class SqliteGatewayStore:
     def __init__(self, case_store) -> None:
         self._case = case_store
 
+    @property
+    def audit_destination(self) -> str | None:
+        """Forward the transport the ``sent`` audit row should record."""
+        return self._case.audit_destination
+
+    @audit_destination.setter
+    def audit_destination(self, value: str | None) -> None:
+        self._case.audit_destination = value
+
     def get_known_names(self) -> tuple[str, ...]:
         return self._case.get_known_names()
 
@@ -244,8 +253,14 @@ def egress_transition_lock(store: EgressStore, request_id: str) -> Iterator[None
 
 
 def egress_send_lock(store: EgressStore, request_id: str) -> tuple[str, str]:
-    """Acquire the send-once lock; returns (lock_key, owner) on success."""
-    owner = secrets.token_hex(32)
+    """Acquire the send-once lock; returns (lock_key, owner) on success.
+
+    The owner names the owning process (``boot_id:pid:random``) so startup
+    recovery can tell a stale lock from a live one (ADR 0011).
+    """
+    from psychtool.store.recovery import BOOT_ID, make_lock_owner
+
+    owner = make_lock_owner(BOOT_ID)
     if not store.try_acquire_send_lock(request_id, owner):
         raise _state_error("egress request send is locked")
     return store.request_lock_key(request_id), owner

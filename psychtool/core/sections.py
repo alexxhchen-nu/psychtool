@@ -226,7 +226,12 @@ def build_section_request_input(
     claims = select_claims(target, claim_ids)
     prompt = build_prompt(claims, instructions=instructions)
     source_refs = [
-        SourceRef(kind="claim", id=claim.id, version=claim.version)
+        SourceRef(
+            kind="claim",
+            id=claim.id,
+            version=claim.version,
+            evidence_ids=list(claim.evidence_ids),
+        )
         for claim in claims
     ]
     return prompt, source_refs
