@@ -32,6 +32,10 @@ export interface Claim {
   topic: string
   verification_status: string
   provider_role: string
+  /** Source material/passage coordinates the API always returns (ADR 0017). */
+  source_document_id: string
+  source_version: number
+  source_passage_id: string
   /** Sentence evidence ids this claim cites (ADR 0017); empty pre-v7. */
   evidence_ids: string[]
 }

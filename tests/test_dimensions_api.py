@@ -201,7 +201,7 @@ def test_r7_ac4_change_dimension_in_one_step(client):
         "sections": [],
         "egress": [],
         "toast": (
-            "Your change was saved. Nothing else needed to be updated. "
+            "Your change was saved. 0 sections were returned to Needs review. "
             "Unsaved text was not changed."
         ),
     }

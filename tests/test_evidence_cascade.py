@@ -34,10 +34,11 @@ WEATHER_TEXT = "The weather was cloudy that week."
 NOTE_TEXT = TEACHER_TEXT + "\n\n" + WEATHER_TEXT
 
 # The exact toast sentences (ADR 0018); assembled here once so every test
-# compares against the same contract the UI will display verbatim.
+# compares against the same contract the UI will display verbatim. The section
+# count is always stated, including zero.
 TOAST_START = "Your change was saved."
 TOAST_END = "Unsaved text was not changed."
-TOAST_NOTHING = "Nothing else needed to be updated."
+TOAST_ZERO_SECTIONS = "0 sections were returned to Needs review."
 
 
 @pytest.fixture
@@ -383,6 +384,7 @@ def test_approved_section_citing_already_pending_claim_returns_to_needs_review(
     assert section.text == "Saved section text."
     assert section.claim_ids == ["c1"]
     assert "section was returned to Needs review" in row["invalidation"]["toast"]
+    assert "0 sections were returned to Needs review" not in row["invalidation"]["toast"]
     assert "no longer marked verified" not in row["invalidation"]["toast"]
 
 
@@ -532,11 +534,11 @@ def _toast(case, ev, **choice):
     return case.set_evidence_choice(ev, **choice)["invalidation"]["toast"]
 
 
-def test_toast_zero_changes_says_nothing_else_needed(case):
+def test_toast_zero_changes_states_zero_sections(case):
     _seed_material(case)
     ev = _ev(case, "reads slowly")["id"]
     toast = _toast(case, ev, role="caregiver", set_role=True)
-    assert toast == f"{TOAST_START} {TOAST_NOTHING} {TOAST_END}"
+    assert toast == f"{TOAST_START} {TOAST_ZERO_SECTIONS} {TOAST_END}"
 
 
 def test_toast_singular_counts(case, store):
@@ -587,12 +589,15 @@ def test_toast_omits_empty_lists(case):
     _add_claim(case, "c1", TEACHER_TEXT, [ev])
     case.mark_claim_status("c1", "verified")
     toast = _toast(case, ev, category="other", set_category=True)
+    # The section count is always stated; only the claim/egress phrases are
+    # omitted when zero.
     assert toast == (
         f"{TOAST_START} "
         "1 citing statement is no longer marked verified. "
+        f"{TOAST_ZERO_SECTIONS} "
         f"{TOAST_END}"
     )
-    assert "section" not in toast
+    assert "1 section was returned" not in toast
     assert "request" not in toast
 
 

@@ -10,12 +10,21 @@ import PasteMaterialPanel from './components/PasteMaterialPanel'
 import DimensionsPanel from './components/DimensionsPanel'
 import EgressReviewPanel from './components/EgressReviewPanel'
 import EvidencePanel from './components/EvidencePanel'
+import ClaimRow from './components/ClaimRow'
+import ReportColumns from './components/ReportColumns'
+import SourceCard from './components/SourceCard'
+import { sourceCardFromClaim, sourceCardFromEvidence } from './source-card'
+import type { SourceCardModel } from './source-card'
 import './App.css'
 
 export const PRIVACY_BANNER = 'Please note: This prototype is not HIPAA compliant yet. Do not enter real patient information. Use only synthetic or separately approved practice materials.'
 
 const STATUS_LABELS: Record<SectionStatus, string> = { empty: 'Empty', draft: 'Draft', needs_review: 'Needs review', approved: 'Approved' }
 const STATUS_ORDER: SectionStatus[] = ['empty', 'draft', 'needs_review', 'approved']
+
+// PT-10: every status tag pairs colour with a glyph (✓ / ? / !) so the
+// state is never carried by colour alone.
+const STATUS_GLYPHS: Record<SectionStatus, string> = { empty: '', draft: '!', needs_review: '?', approved: '✓' }
 
 function App() {
   const [templates, setTemplates] = useState<ReportTemplate[]>([])
@@ -53,7 +62,6 @@ function App() {
     setWorkspaceId(created.case_id)
   }, [])
   return <div className="app-shell">
-    <div className="privacy-banner" role="note">{PRIVACY_BANNER}</div>
     <header className="topbar">
       <div className="brand-lockup"><span className="brand-mark">P</span><div><h1>psychtool</h1><p className="brand-description">Source-traceable writing</p></div></div>
       <div className="topbar-controls">
@@ -66,6 +74,7 @@ function App() {
         <div className="system-status" role="status">{health}</div>
       </div>
     </header>
+    <div className="privacy-banner" role="note">{PRIVACY_BANNER}</div>
     <main className="workspace">
       <section className="intro">
         <div><h2>Your report, section by section.</h2><p>Review sources, approve the exact model request, then edit and save. Request approval and section approval are separate decisions.</p></div>
@@ -141,6 +150,9 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
   // PT-09 (R6 / ADR 0018): the exact server toast after a correction. The
   // toast is rendered verbatim; the client never invents counts.
   const [correctionToast, setCorrectionToast] = useState('')
+  // PT-10: one selected source for the right column. Selecting a section
+  // clears it; the card never replaces the editor with a modal.
+  const [sourceCard, setSourceCard] = useState<SourceCardModel | null>(null)
   const alive = useRef(false)
   const mutation = useRef(false)
   const base = workspaceUrl(workspaceId)
@@ -274,23 +286,28 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
       <label className="field-label">Identifying names ({names.length} saved)<textarea className="names-input" rows={5} value={namesText} disabled={busy} onChange={(event) => setNamesText(event.target.value)} /></label>
       <button className="primary-button" disabled={busy} onClick={saveNames}>Save names</button>
     </section>}
-    {ready && showEvidence && <EvidencePanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} onCorrection={correctionApplied} />}
+    {ready && showEvidence && <EvidencePanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} onCorrection={correctionApplied} onOpenSource={(item) => setSourceCard(sourceCardFromEvidence(item))} />}
     {ready && showDimensions && <DimensionsPanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} syntheticConfirmed={syntheticConfirmed} onCorrection={correctionApplied} />}
-    {ready && selected && selectedState && <div className="report-grid">
-      <aside className="section-rail" aria-label="Report sections"><div className="rail-heading"><span>Document map</span><strong>{template.sections.length} sections</strong></div>
+    {ready && selected && selectedState && <ReportColumns
+      rail={<aside className="section-rail" aria-label="Report sections"><div className="rail-heading"><span>Report sections</span><strong>{template.sections.length} sections</strong></div>
         <ol>{template.sections.map((section, index) => {
           const status = sections.find((state) => state.section_id === section.id)?.status ?? 'empty'
-          return <li key={section.id}><button className={section.id === selectedId ? 'section-link active' : 'section-link'} disabled={busy} aria-current={section.id === selectedId ? 'step' : undefined} aria-label={`${section.title}, ${STATUS_LABELS[status]}`} onClick={() => setSelectedId(section.id)}>
-            <span className="section-number">{String(index + 1).padStart(2, '0')}</span><span className="section-name">{section.title}</span><span className={`status-dot ${status}`} title={STATUS_LABELS[status]} />
+          return <li key={section.id}><button className={section.id === selectedId ? 'section-link active' : 'section-link'} disabled={busy} aria-current={section.id === selectedId ? 'step' : undefined} aria-label={`${section.title}, ${STATUS_LABELS[status]}`} onClick={() => { setSelectedId(section.id); setSourceCard(null) }}>
+            <span className="section-number">{String(index + 1).padStart(2, '0')}</span><span className="section-name">{section.title}</span><span className={`status-tag ${status}`} aria-hidden="true">{STATUS_GLYPHS[status]}</span>
           </button></li>
         })}</ol>
-      </aside>
-      <SectionEditor key={selected.id} workspaceId={workspaceId} template={template} section={selected} initial={selectedState} claims={claims} sourceRevision={sourceRevision} busy={busy} onBusyChange={changeBusy} onSaved={(state) => setSections((items) => items.map((item) => item.section_id === state.section_id ? state : item))} />
-      <aside className="review-panel"><h3>{approved} of {template.sections.length} approved</h3><p>Model requests and report sections have separate approval steps. Generated text stays unsaved until you save it.</p>
-        <div className="state-key">{STATUS_ORDER.map((status) => <div key={status}><span className={`status-dot ${status}`} />{STATUS_LABELS[status]}</div>)}</div>
+      </aside>}
+      editor={<SectionEditor key={selected.id} workspaceId={workspaceId} template={template} section={selected} initial={selectedState} claims={claims} sourceRevision={sourceRevision} busy={busy} onBusyChange={changeBusy} onOpenSourceClaim={(claim) => setSourceCard(sourceCardFromClaim(claim, materials))} onSaved={(state) => setSections((items) => items.map((item) => item.section_id === state.section_id ? state : item))} />}
+      source={<>
+        <h3>{approved} of {template.sections.length} approved</h3>
+        {sourceCard
+          ? <SourceCard card={sourceCard} onClose={() => setSourceCard(null)} />
+          : <p className="source-hint" data-testid="source-card-hint">Select a claim or an evidence item to see its source here. The editor stays open.</p>}
+        <p>Model requests and report sections have separate approval steps. Generated text stays unsaved until you save it.</p>
+        <div className="state-key">{STATUS_ORDER.map((status) => <div key={status}><span className={`status-tag ${status}`} aria-hidden="true">{STATUS_GLYPHS[status]}</span>{STATUS_LABELS[status]}</div>)}</div>
         <small>Development workspace for synthetic or public materials. Reviewer names are labels, not verified identities. These controls do not establish HIPAA compliance.</small>
-      </aside>
-    </div>}
+      </>}
+    />}
   </>
 }
 
@@ -301,8 +318,9 @@ interface EditorProps extends WorkbenchProps {
   sourceRevision: number
   busy: boolean
   onSaved: (state: SectionState) => void
+  onOpenSourceClaim: (claim: Claim) => void
 }
-function SectionEditor({ workspaceId, template, section, initial, claims, sourceRevision, busy, onBusyChange, onSaved }: EditorProps) {
+function SectionEditor({ workspaceId, template, section, initial, claims, sourceRevision, busy, onBusyChange, onSaved, onOpenSourceClaim }: EditorProps) {
   const [form, setForm] = useState(() => ({ text: initial.text, status: initial.status, reviewer: initial.reviewer ?? '', claimIds: initial.claim_ids }))
   const [version, setVersion] = useState(initial.version)
   const [saving, setSaving] = useState(false)
@@ -363,7 +381,7 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
       {section.review_gate === 'licensed_clinician' && <label className="field-label">Reviewer (required to approve)<input className="text-input" disabled={busy} value={form.reviewer} onChange={(event) => setForm((current) => ({ ...current, reviewer: event.target.value }))} /></label>}
     </div>
     <div className="claims-block"><p className="field-label">Source claims</p>
-      {!claims.length ? <p className="muted">Upload a material and review intake claims to add sources.</p> : <ul className="claim-list">{claims.map((claim) => <li key={claim.id}><label className="claim-row"><input type="checkbox" disabled={busy} checked={form.claimIds.includes(claim.id)} onChange={() => toggleClaim(claim.id)} /><span className="claim-id">{claim.id}</span><span className="claim-text">{claim.text}</span></label></li>)}</ul>}
+      {!claims.length ? <p className="muted">Upload a material and review intake claims to add sources.</p> : <ul className="claim-list">{claims.map((claim) => <ClaimRow key={claim.id} claim={claim} checked={form.claimIds.includes(claim.id)} busy={busy} onToggle={toggleClaim} onOpenSource={onOpenSourceClaim} />)}</ul>}
     </div>
     <EgressReviewPanel workspaceId={workspaceId} templateId={template.template_id} templateVersion={template.version} sectionId={section.id} sectionTitle={section.title} claimIds={form.claimIds} sourceRevision={sourceRevision} onGenerated={generated} onBusyChange={onBusyChange} disabled={busy} />
     {error && <div className="error-banner" role="alert">{error}</div>}

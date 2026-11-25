@@ -32,6 +32,7 @@ psychtool 是一個幫助個人寫報告的臨床寫作工作區，目標使用�
 向度對照（ADR 0016）：向度名稱只來自她上傳的清單（`kind=dims`），系統沒有內建官方向度或準則；比對不確定時標「Needs review」、從不猜一個向度；每個向度畫面都寫「This is not a diagnosis. The diagnosis is yours.」。她的確認／更改／「Wrong, no dimension」以穩定 id 落庫。稽核列只記錄她選的白名單值（分類鍵、角色鍵，或向度 id），從不記錄她的文字。
 陳述來源（ADR 0017）：句子證據是陳述唯一的來源——`claim_evidence` 連結表（schema v7）把每條陳述明確連到它引用的同案 active 證據列，跨案引用由外鍵結構性阻擋；v6→v7 遷移只連結既有證據、從不憑空創造。
 更正連鎖（ADR 0018）：她改分類或向度而有效值真的改變時，引用該證據的 verified 陳述回到 pending、引用這些陳述的 approved 段落回到 Needs review、引用該證據的未送出 egress 請求作廢——全部在同一筆 SQLite 交易內完成；陳述與段落的已存文字逐字不動，已送出（sent）的請求永不動。
+三欄工作區（ADR 0019）：桌面版面是段落｜草稿｜來源卡，主題與狀態形狀取自 GitBook 原型。右欄只顯示材料真正有的位置（絕不編造頁碼），中欄編輯器保持可見；不移植原型的匯出按鈕。更正提示語永遠說明有幾個段落回到 Needs review，包括零。
 
 伺服器／瀏覽器路徑的個案儲存為**單一 SQLite 資料庫**（預設 `local-data/psychtool.db`，可用 `PSYCHTOOL_DB_PATH` 覆寫；ADR 0010），以複合主鍵與外鍵在資料庫層強制個案隔離；ADR 0005 的 JSON 工作區仍是 CLI／評測鏈路的格式。把既有 JSON 工作區匯入資料庫：
 
