@@ -73,6 +73,29 @@ describe('evidenceSourceLine', () => {
       'Caregiver note · version 1 · paragraph 2',
     )
   })
+
+  test('appends a 1-based inclusive character range from 0-based half-open offsets', () => {
+    expect(evidenceSourceLine('Caregiver note', 1, 2, 12, 40)).toBe(
+      'Caregiver note · version 1 · paragraph 2 · characters 13–40',
+    )
+  })
+
+  test('omits every missing part instead of guessing it', () => {
+    expect(evidenceSourceLine(null, null, null)).toBe('')
+    expect(evidenceSourceLine('Caregiver note')).toBe('Caregiver note')
+    expect(evidenceSourceLine(null, 3, null)).toBe('version 3')
+    expect(evidenceSourceLine('Caregiver note', 1, null)).toBe(
+      'Caregiver note · version 1',
+    )
+    expect(evidenceSourceLine('Caregiver note', 1, 2, 5, null)).toBe(
+      'Caregiver note · version 1 · paragraph 2',
+    )
+  })
+
+  test('never renders a page number', () => {
+    const line = evidenceSourceLine('Caregiver note', 1, 2, 12, 40)
+    expect(line).not.toMatch(/page/i)
+  })
 })
 
 describe('droppedNotice', () => {

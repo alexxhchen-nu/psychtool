@@ -447,3 +447,28 @@
 - Tests: store atomicity (injected mid-transaction failure rolls everything back), toast 0/1/2+ counts, category reset when the effective label changes, approved sections and kind=claim-only egress on already-pending claims, API parity, bun helpers (toast + unsaved text not rewritten), and a Playwright e2e that types unsaved text, changes the cited category, checks the toast, and confirms the prepared request is invalidated.
 - ADR 0018. Supervisor review findings (category-reset trigger; section/egress matching every citing claim) were fixed in chunk 2. Supervisor also fixed the e2e after the worker hit its step limit: accept the stored suggestion, share the Playwright DB path across runner and worker, mark the claim verified through CaseStore, seed sessionStorage so the egress panel can restore an API-prepared request, and only show the editor “Needs review” note when the open approved section actually flips.
 
+
+
+## 2026-11-25 12:39 CST — PT-10：三欄工作區、GitBook 主題、來源卡（GROK-40 / R8）
+
+**執行模型**：chunk 1 為 kimi-for-coding via Grok Workhorse；kimi 觸及週配額後，chunk 2 改走 deepseek-v4.1-flash-1017（其後 HTTP/2 GOAWAY）。chunk 3（對比、截圖、e2e、文件）由 supervisor 在同一工作樹完成。
+
+### 變更
+
+- `_r6_invalidation_toast` 中段永遠寫出回到 Needs review 的段落數（含「0 sections were returned to Needs review.」）；開頭／結尾不變；不再使用 “Nothing else needed to be updated.” 陳述與 egress 句仍只在數量非零時出現。對應測試已更新。
+- 三欄工作區（`256px minmax(0,1fr) minmax(340px,0.66fr)`，1280／1024 收合）與 GitBook 主題 token（`--paper #FFFFFF`、`--ink #1D1D1D`、`--accent #E8460F`、`--accent-ink #C42A00` 等）移植自原型。隱私橫幅為 ink 底白字；主按鈕用 accent-ink 以達文字 4.5:1；表單邊框用 `--ctl`（≥3:1）。OFL Proto Sans／Mono 以 `'self'` 字體檔嵌入。
+- 右欄來源卡（R8）：點證據或已引用陳述顯示原文範圍、材料／版本、角色、是否未確認；中欄編輯器保持可見、無彈窗。位置列只由真實欄位組成（1-based 閉區間顯示半開的碼位偏移）；絕不編造頁碼。不移植 Export（Q7）。
+- 新增 `docs/adr/0019-r8-three-column-workspace.md`；三份 README 各加一行。對比腳本與原型基線納入 `web/scripts/contrast.js`、`web/e2e/prototype/`、`web/e2e/baselines/`。
+- 測試：bun `source-card.test.tsx`、`export-ui.test.ts`；Playwright `workspace.e2e.ts`（R8 + Q7）、`contrast.e2e.ts`、`visual.e2e.ts`（1440／1280／1024，遮罩可變內文與原型匯出控制，工作閾值 5%）。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **798 passed**。
+- `cd web && bun test` → **180 passed / 0 fail**。
+- `cd web && bun run build` → 成功（含 6 個嵌入字體）。
+- `cd web && bun run e2e` → **21 passed**（含既有套件）。對比：149 筆量測、**0 failures**，最低 3.69:1（表單邊框）。截圖差異（chrome／版面／主題，遮罩可變內文與原型 Export）：1440 **0.71%**、1280 **0.94%**、1024 **1.54%**，皆低於 5%。
+
+### 未解決事項
+
+- 截圖「約定閾值」在 PT-03–PT-09 筆記中沒有寫下數字；本 PT 以 5% 為工作閾值，若另有約定需再對齊。
+- 未開始 PT-11 或 GROK-53。

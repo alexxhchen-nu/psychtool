@@ -26,9 +26,31 @@ export function highlightParts(text: string, start: number, end: number): Highli
   }
 }
 
-/** Format the source line shown under each evidence quote. */
-export function evidenceSourceLine(materialTitle: string, version: number, paragraph: number): string {
-  return `${materialTitle} · version ${version} · paragraph ${paragraph}`
+/**
+ * Format the source line shown under each evidence quote.
+ *
+ * Every part is optional and omitted when missing: title, version, paragraph,
+ * and the character range. The store keeps offsets as 0-based half-open
+ * Unicode code-point ranges [start, end) (ADR 0014); the line shows the
+ * prototype's 1-based inclusive characters, `a+1–b`, so a span [12, 40)
+ * reads "characters 13–40". A page is NEVER shown — the store has no page
+ * concept, so inventing one would fabricate a location.
+ */
+export function evidenceSourceLine(
+  materialTitle?: string | null,
+  version?: number | null,
+  paragraph?: number | null,
+  start?: number | null,
+  end?: number | null,
+): string {
+  const parts: string[] = []
+  if (materialTitle) parts.push(materialTitle)
+  if (version != null) parts.push(`version ${version}`)
+  if (paragraph != null) parts.push(`paragraph ${paragraph}`)
+  if (start != null && end != null) {
+    parts.push(`characters ${start + 1}–${end}`)
+  }
+  return parts.join(' · ')
 }
 
 /** Fixed notice shown only when candidates were dropped (never repaired). */

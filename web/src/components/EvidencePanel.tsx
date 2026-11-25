@@ -1,19 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { getEvidence, refreshEvidence, setEvidenceChoice } from '../api'
-import {
-  CATEGORY_OPTIONS,
-  ROLE_OPTIONS,
-  categoryLabel,
-  droppedNotice,
-  evidenceSourceLine,
-  highlightParts,
-  reasonLine,
-  roleLabel,
-  setByText,
-} from '../evidence'
-import { dimensionChipLabel } from '../dimensions'
+import { droppedNotice, highlightParts } from '../evidence'
 import { correctionToast } from '../correction'
 import type { EvidenceInvalidation, EvidenceItem, EvidenceResponse, Material } from '../types'
+import EvidenceRow from './EvidenceRow'
 
 const HEADER_TEXT =
   "Each item is one sentence from this case's materials. Click an item to see where it comes from. This list is for you to check; it is not a conclusion."
@@ -26,9 +16,11 @@ interface EvidencePanelProps {
   busy: boolean
   /** R6 (PT-09 / ADR 0018): the case-level toast + pill/revision updater. */
   onCorrection?: (toast: string, invalidation: EvidenceInvalidation) => void
+  /** PT-10: open this item in the right-column source card. */
+  onOpenSource?: (item: EvidenceItem) => void
 }
 
-export default function EvidencePanel({ workspaceId, materials, busy, onCorrection }: EvidencePanelProps) {
+export default function EvidencePanel({ workspaceId, materials, busy, onCorrection, onOpenSource }: EvidencePanelProps) {
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null)
   const [selected, setSelected] = useState<EvidenceItem | null>(null)
   const [error, setError] = useState('')
@@ -134,78 +126,16 @@ export default function EvidencePanel({ workspaceId, materials, busy, onCorrecti
       {evidence && evidence.items.length > 0 && (
         <ul className="evidence-list">
           {evidence.items.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                className="evidence-item"
-                data-testid="evidence-item"
-                aria-pressed={selected?.id === item.id}
-                disabled={busy}
-                onClick={() => setSelected(item)}
-              >
-                <span className="evidence-quote">{item.quote}</span>
-                <span className="evidence-chips">
-                  <span
-                    className={`evidence-chip category-chip${item.category === 'uncategorized' ? ' uncategorized' : ''}`}
-                    data-testid="category-chip"
-                  >
-                    {item.category_label || categoryLabel(item.category)}
-                  </span>
-                  <span
-                    className="evidence-chip role-chip"
-                    data-testid="role-chip"
-                  >
-                    From: {item.role_label || roleLabel(item.role)}
-                  </span>
-                  <span
-                    className="evidence-chip dimension-chip"
-                    data-testid="dimension-chip"
-                  >
-                    Dimension: {dimensionChipLabel(item)}
-                  </span>
-                </span>
-                <span className="evidence-reason" data-testid="category-reason">
-                  {reasonLine(item.category_reason)}
-                </span>
-                {setByText(item.category_set_by) && (
-                  <span className="evidence-set-by">{setByText(item.category_set_by)}</span>
-                )}
-                {setByText(item.role_set_by) && (
-                  <span className="evidence-set-by">{setByText(item.role_set_by)}</span>
-                )}
-                <span className="evidence-source-line">
-                  {evidenceSourceLine(item.material_title, item.material_version, item.paragraph)}
-                </span>
-              </button>
-              <div className="evidence-choice-controls">
-                <label className="evidence-choice">
-                  Change category
-                  <select
-                    aria-label="Change category"
-                    value={item.category}
-                    disabled={busy || saving}
-                    onChange={(event) => choose(item, { category: event.target.value as EvidenceItem['category'] })}
-                  >
-                    {CATEGORY_OPTIONS.map((option) => (
-                      <option key={option.key} value={option.key}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="evidence-choice">
-                  Change source role
-                  <select
-                    aria-label="Change source role"
-                    value={item.role}
-                    disabled={busy || saving}
-                    onChange={(event) => choose(item, { role: event.target.value as EvidenceItem['role'] })}
-                  >
-                    {ROLE_OPTIONS.map((option) => (
-                      <option key={option.key} value={option.key}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </li>
+            <EvidenceRow
+              key={item.id}
+              item={item}
+              selected={selected?.id === item.id}
+              busy={busy}
+              saving={saving}
+              onSelect={setSelected}
+              onOpenSource={(row) => onOpenSource?.(row)}
+              onChoose={choose}
+            />
           ))}
         </ul>
       )}

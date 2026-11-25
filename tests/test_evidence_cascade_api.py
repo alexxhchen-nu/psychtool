@@ -25,7 +25,7 @@ WEATHER_MD = "The weather was cloudy that week.\n"
 WEATHER_TEXT = "The weather was cloudy that week."
 
 NO_CASCADE_TOAST = (
-    "Your change was saved. Nothing else needed to be updated. "
+    "Your change was saved. 0 sections were returned to Needs review. "
     "Unsaved text was not changed."
 )
 

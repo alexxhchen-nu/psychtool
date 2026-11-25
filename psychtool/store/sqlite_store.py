@@ -83,9 +83,10 @@ R6_CASCADE_STEPS = ("claims", "sections", "egress")
 def _r6_invalidation_toast(claims: int, sections: int, egress: int) -> str:
     """Exact English toast for the R6 cascade (ADR 0018).
 
-    Count phrases only appear for non-zero lists; an all-empty cascade says
-    "Nothing else needed to be updated." The final sentence is always present:
-    saved text is never rewritten by this cascade.
+    The section count is ALWAYS stated, including zero ("0 sections were
+    returned to Needs review."); the claim and egress phrases only appear for
+    non-zero counts. The final sentence is always present: saved text is never
+    rewritten by this cascade.
     """
     parts = ["Your change was saved."]
     if claims:
@@ -94,20 +95,17 @@ def _r6_invalidation_toast(claims: int, sections: int, egress: int) -> str:
             if claims == 1
             else f"{claims} citing statements are no longer marked verified."
         )
-    if sections:
-        parts.append(
-            "1 section was returned to Needs review."
-            if sections == 1
-            else f"{sections} sections were returned to Needs review."
-        )
+    parts.append(
+        "1 section was returned to Needs review."
+        if sections == 1
+        else f"{sections} sections were returned to Needs review."
+    )
     if egress:
         parts.append(
             "1 prepared request was invalidated and must be prepared again."
             if egress == 1
             else f"{egress} prepared requests were invalidated and must be prepared again."
         )
-    if not (claims or sections or egress):
-        parts.append("Nothing else needed to be updated.")
     parts.append("Unsaved text was not changed.")
     return " ".join(parts)
 

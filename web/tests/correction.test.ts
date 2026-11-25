@@ -11,7 +11,7 @@ import type { EvidenceInvalidation, SectionState } from '../src/types'
 // but text is never touched.
 
 const NO_CASCADE_TOAST =
-  'Your change was saved. Nothing else needed to be updated. Unsaved text was not changed.'
+  'Your change was saved. 0 sections were returned to Needs review. Unsaved text was not changed.'
 
 function invalidation(overrides: Partial<EvidenceInvalidation> = {}): EvidenceInvalidation {
   return { claims: [], sections: [], egress: [], toast: NO_CASCADE_TOAST, ...overrides }
