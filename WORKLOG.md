@@ -367,3 +367,38 @@
   - The kept full-width paragraph ("ＡＢＣ school note, normal day. 他周末会补觉。") is stored as uploaded, not normalized.
   - `GET /evidence` → 7 items, each with quote == passage[start:end]; this includes "Dr. Lee…", "7.5 hours", the "1 a.m." sentence, a CJK sentence and a sentence after an emoji (code-point offsets).
   - Case B's text is not in case A's evidence; row counts are unchanged after the GET; an unknown case → 404; no material text in the log.
+
+## 2026-11-24 18:15 CST — PT-06 review answers from Alex, and PT-07 supervisor verification (GROK-37)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with three follow-up rounds. The deepseek-flash fallback was not triggered. The supervisor provisioned `.venv`/`node_modules` in the sandbox worktree and ran Playwright outside it.
+
+### Alex's answers to the PT-06 questions (2026-11-24)
+
+1. **Persist evidence:** evidence is stored (schema v5 `evidence` table) instead of recomputed on every request. Each item has a stable id derived only from its location (case, material, version, passage, start, end), so her category and role choices survive later changes to the extraction or category rules. `test_correction_survives_rules_change` covers it.
+2. **Sentence evidence as the only source** (paragraph claim suggestions cite evidence ids; the parallel paragraph path removed): **deferred, not done in PT-07.** It changes the claims model and schema (claims FK, egress lineage, the walking-skeleton e2e and about 7 test files), which is outside this card's categories/reasons/roles scope. Flagged for WBPM to track as its own card. Claims are unchanged.
+3. **Pagination:** waits for PT-10; not added.
+4. **English-only abbreviation list:** fine for M1; unchanged.
+
+### Supervisor review changes
+
+- After her correction the item still showed the rule's reason next to her chip. It now shows "You chose this category." / "You chose this source role."; the rule's reason stays in `suggested_*_reason`.
+- `GET /evidence` ran one material query per item (N+1, 190k queries for a 9 MB upload). `paragraph` now comes from a JOIN on passages, and ordering follows passage position (the passage-id string sorted "p1000" before "p999").
+- `refresh_evidence` preloads existing rows per material; import-triggered refresh covers only the imported material. 50k-paragraph perf guard added (refresh 1.5 s, list 0.5 s in the sandbox).
+- GET no longer reports `dropped` (it would have been an in-memory recount); only `POST /evidence/refresh` does. e2e fixes: re-select the case after reload; read `dropped` from refresh.
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **658 passed**; `bun test` → **140 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **10 passed** (new: 3 category tests for R5-AC1, R5-AC2 and correction across reload/refresh).
+- Mutation checks (each made the named tests fail):
+  - categorize always returns uncategorized → 26 tests;
+  - refresh overwrites her category → 5, including the rules-change correction test;
+  - unstable id → 6, including `test_stable_id_depends_only_on_location`;
+  - superseded rows deleted → 2;
+  - rule reason shown after her choice → 2.
+- Live `psychtool-server` (synthetic):
+  - "Teacher says he reads slowly in class" → Development & school, role School, each with a reason quoting "Teacher";
+  - "The weather was cloudy that week" → Uncategorized / To confirm with the fixed no-guess reasons;
+  - a PUT correction (Other, Clinician) survived refresh with the same id;
+  - bad key / extra field → 400; cross-case or unknown id → 404;
+  - GET writes nothing; refresh with no change writes no audit row; audit rows hold ids and counts only, no text; case B text is not in case A; no material text in the log;
+  - a 4.9 MB, 80,000-paragraph upload took 7.8 s including extraction, and GET returned 80,000 items in 1.9 s.
