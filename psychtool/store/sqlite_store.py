@@ -32,7 +32,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from psychtool.core.categorize import (
+    CATEGORY_KEYS,
+    ROLE_KEYS,
+    CategorizeRules,
+    default_rules,
+    suggest_category,
+    suggest_role,
+)
 from psychtool.core.claims import Claim
+from psychtool.core.extract import Extractor, extract_evidence
 from psychtool.core.sections import SectionDraft
 from psychtool.core.workspace import Material, Passage
 from psychtool.store import audit as _audit
@@ -44,7 +53,14 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Mirrors the material-id rule used by the ingest path.
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
+
+# R5 (ADR 0015): when SHE chose the category/role, the effective reason is a
+# fixed sentence about her choice — never the rule's keyword sentence, which
+# would be misleading next to her chip. The rule's reason stays available on
+# the suggested_*_reason fields.
+CLINICIAN_CATEGORY_REASON = "You chose this category."
+CLINICIAN_ROLE_REASON = "You chose this source role."
 
 _SCHEMA_STATEMENTS = (
     """
@@ -170,6 +186,46 @@ _SCHEMA_STATEMENTS = (
         item_count   INTEGER CHECK (item_count IS NULL OR item_count >= 0)
     )
     """,
+    # Persisted evidence (PT-07 / ADR 0015, schema v5). The id is location-
+    # derived (sha256 of case/material/version/passage/start/end), so her
+    # category/role choices survive rule changes that keep the same span;
+    # rules updates refresh only the suggested_* columns. Rows are superseded,
+    # never deleted; a superseded row with a correction stays visible.
+    """
+    CREATE TABLE IF NOT EXISTS evidence (
+        case_id            TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+        evidence_id        TEXT NOT NULL,
+        material_id        TEXT NOT NULL,
+        material_version   INTEGER NOT NULL CHECK (material_version >= 1),
+        passage_id         TEXT NOT NULL,
+        start              INTEGER NOT NULL CHECK (start >= 0),
+        end                INTEGER NOT NULL CHECK (end > start),
+        quote              TEXT NOT NULL,
+        suggested_category TEXT NOT NULL
+            CHECK (suggested_category IN ('family_history', 'medical_history',
+                                          'test_results', 'behavioral_observations',
+                                          'development_school', 'daily_living',
+                                          'other', 'uncategorized')),
+        category_reason    TEXT NOT NULL,
+        suggested_role     TEXT NOT NULL
+            CHECK (suggested_role IN ('school', 'caregiver', 'medical_record',
+                                      'clinician', 'client', 'to_confirm')),
+        role_reason        TEXT NOT NULL,
+        category           TEXT
+            CHECK (category IS NULL OR category IN ('family_history', 'medical_history',
+                                                    'test_results', 'behavioral_observations',
+                                                    'development_school', 'daily_living',
+                                                    'other', 'uncategorized')),
+        role               TEXT
+            CHECK (role IS NULL OR role IN ('school', 'caregiver', 'medical_record',
+                                            'clinician', 'client', 'to_confirm')),
+        status             TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+        rules_version      TEXT NOT NULL,
+        PRIMARY KEY (case_id, evidence_id),
+        FOREIGN KEY (case_id, material_id, material_version, passage_id)
+            REFERENCES passages(case_id, material_id, version, passage_id)
+    )
+    """,
     """
     CREATE TRIGGER IF NOT EXISTS audit_log_no_update
     BEFORE UPDATE ON audit_log
@@ -278,6 +334,46 @@ _MIGRATION_STATEMENTS = {
     4: (
         "ALTER TABLE audit_log ADD COLUMN item_count INTEGER"
         " CHECK (item_count IS NULL OR item_count >= 0)",
+    ),
+    # Schema v4 -> v5 (PT-07 / ADR 0015): persisted evidence rows with stable,
+    # location-derived ids. Pure additive migration: existing tables and the
+    # audit chain are untouched.
+    5: (
+        """
+        CREATE TABLE IF NOT EXISTS evidence (
+            case_id            TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+            evidence_id        TEXT NOT NULL,
+            material_id        TEXT NOT NULL,
+            material_version   INTEGER NOT NULL CHECK (material_version >= 1),
+            passage_id         TEXT NOT NULL,
+            start              INTEGER NOT NULL CHECK (start >= 0),
+            end                INTEGER NOT NULL CHECK (end > start),
+            quote              TEXT NOT NULL,
+            suggested_category TEXT NOT NULL
+                CHECK (suggested_category IN ('family_history', 'medical_history',
+                                              'test_results', 'behavioral_observations',
+                                              'development_school', 'daily_living',
+                                              'other', 'uncategorized')),
+            category_reason    TEXT NOT NULL,
+            suggested_role     TEXT NOT NULL
+                CHECK (suggested_role IN ('school', 'caregiver', 'medical_record',
+                                          'clinician', 'client', 'to_confirm')),
+            role_reason        TEXT NOT NULL,
+            category           TEXT
+                CHECK (category IS NULL OR category IN ('family_history', 'medical_history',
+                                                        'test_results', 'behavioral_observations',
+                                                        'development_school', 'daily_living',
+                                                        'other', 'uncategorized')),
+            role               TEXT
+                CHECK (role IS NULL OR role IN ('school', 'caregiver', 'medical_record',
+                                                'clinician', 'client', 'to_confirm')),
+            status             TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+            rules_version      TEXT NOT NULL,
+            PRIMARY KEY (case_id, evidence_id),
+            FOREIGN KEY (case_id, material_id, material_version, passage_id)
+                REFERENCES passages(case_id, material_id, version, passage_id)
+        )
+        """,
     ),
 }
 
@@ -1052,6 +1148,308 @@ class CaseStore:
             text=row["text"],
             verification_status=row["verification_status"],
         )
+
+    # -- evidence (PT-07 / ADR 0015) ----------------------------------------
+
+    @staticmethod
+    def _evidence_id(
+        case_id: str,
+        material_id: str,
+        material_version: int,
+        passage_id: str,
+        start: int,
+        end: int,
+    ) -> str:
+        """Stable id derived from the location only (never rules/category)."""
+        payload = "\x1f".join(
+            (case_id, material_id, str(material_version), passage_id, str(start), str(end))
+        )
+        return "ev_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+    def refresh_evidence(
+        self,
+        extractor: Extractor,
+        rules: CategorizeRules | None = None,
+        material_ids: set[str] | None = None,
+    ) -> dict[str, int]:
+        """Recompute persisted evidence for the latest material versions.
+
+        One transaction, idempotent: rows are upserted by their stable id —
+        existing rows get new suggestions/reasons/rules_version but her
+        ``category``/``role`` choices are NEVER overwritten; rows the current
+        rules no longer produce become ``superseded`` (never deleted). One
+        ``evidence.extract`` audit row is written per material whose rows
+        changed (item_count = its active items). Returns per-material active
+        counts plus the number of candidates dropped by the span check.
+
+        ``material_ids`` restricts the refresh to those materials (upload /
+        paste refresh only the imported material); ``None`` refreshes every
+        material of the case.
+        """
+        rules = rules or default_rules()
+        materials = [
+            material
+            for material in self.list_materials()
+            if material_ids is None or material.id in material_ids
+        ]
+        result = extract_evidence(extractor, materials)
+        by_material: dict[str, list] = {material.id: [] for material in materials}
+        for item in result.items:
+            by_material.setdefault(item.span.material_id, []).append(item)
+        counts: dict[str, int] = {}
+        with self._store.transaction() as connection:
+            for material_id in sorted(by_material):
+                # Preload every existing row of this material in ONE query;
+                # the per-candidate loop below is then pure dict lookups.
+                existing_rows = {
+                    row["evidence_id"]: row
+                    for row in connection.execute(
+                        "SELECT evidence_id, category, role, suggested_category,"
+                        "       category_reason, suggested_role, role_reason,"
+                        "       rules_version, status"
+                        " FROM evidence WHERE case_id = ? AND material_id = ?",
+                        (self._case_id, material_id),
+                    ).fetchall()
+                }
+                active = 0
+                changed = False
+                produced_ids: set[str] = set()
+                for item in by_material[material_id]:
+                    span = item.span
+                    evidence_id = self._evidence_id(
+                        self._case_id,
+                        span.material_id,
+                        span.material_version,
+                        span.passage_id,
+                        span.start,
+                        span.end,
+                    )
+                    produced_ids.add(evidence_id)
+                    suggested_category, _, category_reason = suggest_category(
+                        item.quote, rules
+                    )
+                    suggested_role, _, role_reason = suggest_role(item.quote, rules)
+                    existing = existing_rows.get(evidence_id)
+                    if existing is None:
+                        connection.execute(
+                            "INSERT INTO evidence"
+                            " (case_id, evidence_id, material_id, material_version,"
+                            "  passage_id, start, end, quote, suggested_category,"
+                            "  category_reason, suggested_role, role_reason, category,"
+                            "  role, status, rules_version)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,"
+                            "         'active', ?)",
+                            (
+                                self._case_id,
+                                evidence_id,
+                                span.material_id,
+                                span.material_version,
+                                span.passage_id,
+                                span.start,
+                                span.end,
+                                item.quote,
+                                suggested_category,
+                                category_reason,
+                                suggested_role,
+                                role_reason,
+                                rules.version,
+                            ),
+                        )
+                        changed = True
+                    else:
+                        updates: dict[str, object] = {}
+                        if existing["suggested_category"] != suggested_category:
+                            updates["suggested_category"] = suggested_category
+                        if existing["category_reason"] != category_reason:
+                            updates["category_reason"] = category_reason
+                        if existing["suggested_role"] != suggested_role:
+                            updates["suggested_role"] = suggested_role
+                        if existing["role_reason"] != role_reason:
+                            updates["role_reason"] = role_reason
+                        if existing["rules_version"] != rules.version:
+                            updates["rules_version"] = rules.version
+                        if existing["status"] != "active":
+                            updates["status"] = "active"
+                        if updates:
+                            assignments = ", ".join(f"{key} = ?" for key in updates)
+                            connection.execute(
+                                f"UPDATE evidence SET {assignments}"
+                                " WHERE case_id = ? AND evidence_id = ?",
+                                (*updates.values(), self._case_id, evidence_id),
+                            )
+                            changed = True
+                    active += 1
+                # Rows this material no longer produces become superseded —
+                # never deleted, so a correction on them survives (R5/ADR 0015).
+                # This covers both spans the current rules dropped and rows
+                # left over from an older material version.
+                for row in existing_rows.values():
+                    if row["status"] != "active" or row["evidence_id"] in produced_ids:
+                        continue
+                    connection.execute(
+                        "UPDATE evidence SET status = 'superseded'"
+                        " WHERE case_id = ? AND evidence_id = ?",
+                        (self._case_id, row["evidence_id"]),
+                    )
+                    changed = True
+                counts[material_id] = active
+                if changed:
+                    self.append_audit(
+                        case_id=self._case_id,
+                        action="evidence.extract",
+                        object_type="material",
+                        object_id=material_id,
+                        item_count=active,
+                    )
+        return {"materials": counts, "dropped": result.dropped}
+
+    def list_evidence(self) -> list[dict]:
+        """Active evidence rows plus superseded rows that carry a correction.
+
+        Read-only. The effective category/role is her choice when set,
+        otherwise the current suggestion; ``category_set_by``/``role_set_by``
+        say which. When SHE chose, the effective reason is the fixed
+        "You chose ..." sentence and the rule's reason stays available as
+        ``suggested_*_reason`` (so the UI never shows a rule reason next to
+        her chip). Superseded corrected rows are flagged
+        ``kept_because_corrected`` so the UI can show why they remain.
+        ``paragraph`` comes from a JOIN on passages (no per-item query) and
+        the ordering follows passage position, not the passage id string.
+        """
+        rows = self._db.execute(
+            """
+            SELECT e.*, m.title AS material_title, p.position AS paragraph
+            FROM evidence e
+            JOIN materials m
+              ON m.case_id = e.case_id AND m.material_id = e.material_id
+             AND m.version = e.material_version
+            LEFT JOIN passages p
+              ON p.case_id = e.case_id AND p.material_id = e.material_id
+             AND p.version = e.material_version AND p.passage_id = e.passage_id
+            WHERE e.case_id = ?
+              AND (e.status = 'active' OR e.category IS NOT NULL OR e.role IS NOT NULL)
+            ORDER BY e.material_id, e.material_version, p.position, e.start, e.evidence_id
+            """,
+            (self._case_id,),
+        ).fetchall()
+        items = []
+        for row in rows:
+            superseded = row["status"] == "superseded"
+            category_set_by = "clinician" if row["category"] else "suggestion"
+            role_set_by = "clinician" if row["role"] else "suggestion"
+            items.append(
+                {
+                    "id": row["evidence_id"],
+                    "quote": row["quote"],
+                    "material_id": row["material_id"],
+                    "material_title": row["material_title"],
+                    "material_version": row["material_version"],
+                    "passage_id": row["passage_id"],
+                    "paragraph": row["paragraph"] or 0,
+                    "start": row["start"],
+                    "end": row["end"],
+                    "category": row["category"] or row["suggested_category"],
+                    "category_reason": (
+                        CLINICIAN_CATEGORY_REASON
+                        if category_set_by == "clinician"
+                        else row["category_reason"]
+                    ),
+                    "category_set_by": category_set_by,
+                    "suggested_category": row["suggested_category"],
+                    "suggested_category_reason": row["category_reason"],
+                    "role": row["role"] or row["suggested_role"],
+                    "role_reason": (
+                        CLINICIAN_ROLE_REASON
+                        if role_set_by == "clinician"
+                        else row["role_reason"]
+                    ),
+                    "role_set_by": role_set_by,
+                    "suggested_role": row["suggested_role"],
+                    "suggested_role_reason": row["role_reason"],
+                    "kept_because_corrected": superseded,
+                }
+            )
+        return items
+
+    def evidence_needs_extraction(self) -> bool:
+        """True when any latest material version has no evidence rows yet."""
+        row = self._db.execute(
+            """
+            SELECT 1 FROM materials m
+            JOIN (
+                SELECT material_id, MAX(version) AS max_version
+                FROM materials WHERE case_id = ? GROUP BY material_id
+            ) latest ON latest.material_id = m.material_id
+                     AND latest.max_version = m.version
+            WHERE m.case_id = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM evidence e
+                  WHERE e.case_id = m.case_id AND e.material_id = m.material_id
+                    AND e.material_version = m.version
+              )
+            LIMIT 1
+            """,
+            (self._case_id, self._case_id),
+        ).fetchone()
+        return row is not None
+
+    def get_evidence(self, evidence_id: str) -> dict:
+        row = self._db.execute(
+            "SELECT * FROM evidence WHERE case_id = ? AND evidence_id = ?",
+            (self._case_id, evidence_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown evidence: {evidence_id}")
+        return dict(row)
+
+    def set_evidence_choice(
+        self,
+        evidence_id: str,
+        *,
+        category: str | None = None,
+        role: str | None = None,
+        set_category: bool = False,
+        set_role: bool = False,
+    ) -> dict:
+        """Record her category/role choice (or reset it with None).
+
+        ``set_category``/``set_role`` distinguish "not provided" from an
+        explicit null reset. One transaction per call with one audit row
+        (``evidence.categorize`` / ``evidence.set_role``; ids only, no text).
+        Unknown id raises KeyError; a non-allowlisted key raises ValueError.
+        """
+        if set_category and category is not None and category not in CATEGORY_KEYS:
+            raise ValueError("category is not on the allowlist")
+        if set_role and role is not None and role not in ROLE_KEYS:
+            raise ValueError("role is not on the allowlist")
+        self.get_evidence(evidence_id)  # unknown id -> KeyError before any write
+        with self._store.transaction() as connection:
+            current = self.get_evidence(evidence_id)
+            if set_category and current["category"] != category:
+                connection.execute(
+                    "UPDATE evidence SET category = ?"
+                    " WHERE case_id = ? AND evidence_id = ?",
+                    (category, self._case_id, evidence_id),
+                )
+                self.append_audit(
+                    case_id=self._case_id,
+                    action="evidence.categorize",
+                    object_type="evidence",
+                    object_id=evidence_id,
+                )
+            if set_role and current["role"] != role:
+                connection.execute(
+                    "UPDATE evidence SET role = ?"
+                    " WHERE case_id = ? AND evidence_id = ?",
+                    (role, self._case_id, evidence_id),
+                )
+                self.append_audit(
+                    case_id=self._case_id,
+                    action="evidence.set_role",
+                    object_type="evidence",
+                    object_id=evidence_id,
+                )
+        return self.get_evidence(evidence_id)
 
     # Status transitions that must leave exactly one audit row in the same
     # transaction as the state change itself (ADR 0011).

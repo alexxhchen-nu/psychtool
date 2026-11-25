@@ -40,6 +40,9 @@ AuditAction = Literal[
     "material.protected_blocked",
     "claim.accept",
     "section.save",
+    "evidence.extract",
+    "evidence.categorize",
+    "evidence.set_role",
     "egress.prepare",
     "egress.approve",
     "egress.invalidate",
@@ -57,6 +60,9 @@ AUDIT_ACTIONS: frozenset[str] = frozenset(
         "material.protected_blocked",
         "claim.accept",
         "section.save",
+        "evidence.extract",
+        "evidence.categorize",
+        "evidence.set_role",
         "egress.prepare",
         "egress.approve",
         "egress.invalidate",
@@ -67,7 +73,7 @@ AUDIT_ACTIONS: frozenset[str] = frozenset(
     }
 )
 AUDIT_OBJECT_TYPES: frozenset[str] = frozenset(
-    {"case", "material", "claim", "section", "egress_request"}
+    {"case", "material", "claim", "section", "evidence", "egress_request"}
 )
 AUDIT_DESTINATIONS: frozenset[str] = frozenset({"fake", "http"})
 

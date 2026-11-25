@@ -751,6 +751,9 @@ def test_full_flow_produces_one_audit_row_per_event_in_order(tmp_path, monkeypat
         "case.create",
         "material.import",
         "case.confirm_synthetic",
+        # PT-07 (ADR 0015): a successful import auto-runs evidence extraction,
+        # which appends one evidence.extract row per changed material.
+        "evidence.extract",
         "claim.accept",
         "egress.prepare",
         "egress.approve",

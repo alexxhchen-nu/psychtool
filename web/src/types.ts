@@ -97,6 +97,24 @@ export interface PrepareInput {
 }
 export type ApprovalInput = { content_hash: string; reviewer: string } | { content_hash: string; synthetic_auto_reason: string }
 export interface SendResult { request_id: string; status: 'sent'; text: string }
+/** R5 (PT-07 / ADR 0015): the 8 allowlisted category keys. */
+export type EvidenceCategory =
+  | 'family_history'
+  | 'medical_history'
+  | 'test_results'
+  | 'behavioral_observations'
+  | 'development_school'
+  | 'daily_living'
+  | 'other'
+  | 'uncategorized'
+/** R5: the 6 allowlisted source-role keys, recorded separately from category. */
+export type EvidenceRole =
+  | 'school'
+  | 'caregiver'
+  | 'medical_record'
+  | 'clinician'
+  | 'client'
+  | 'to_confirm'
 export interface EvidenceItem {
   id: string
   quote: string
@@ -108,11 +126,48 @@ export interface EvidenceItem {
   /** Code-point offsets into the passage text (see ADR 0014). */
   start: number
   end: number
+  /** Effective category: her choice when set, otherwise the suggestion. */
+  category: EvidenceCategory
+  category_label: string
+  /** Short reason quoting the matched keyword (<= 140 chars; R5-AC1). */
+  category_reason: string
+  category_set_by: 'clinician' | 'suggestion'
+  role: EvidenceRole
+  role_label: string
+  role_reason: string
+  role_set_by: 'clinician' | 'suggestion'
+  /** Superseded by newer rules but kept because it carries her correction. */
+  kept_because_corrected: boolean
 }
 export interface EvidenceResponse {
   extractor: string
+  rules_version: string
   items: EvidenceItem[]
+  needs_extraction: boolean
+}
+export interface EvidenceRefreshResult {
+  extractor: string
+  rules_version: string
+  materials: Record<string, number>
+  /** Candidates dropped by the span check during THIS refresh. */
   dropped: number
+  needs_extraction: boolean
+}
+/** Fields present on a PUT; omitted fields stay untouched. */
+export interface EvidenceChoiceInput {
+  category?: EvidenceCategory | null
+  role?: EvidenceRole | null
+}
+export interface EvidenceChoiceResult {
+  id: string
+  category: EvidenceCategory
+  category_label: string
+  category_reason: string
+  category_set_by: 'clinician' | 'suggestion'
+  role: EvidenceRole
+  role_label: string
+  role_reason: string
+  role_set_by: 'clinician' | 'suggestion'
 }
 export interface PasteMaterialInput {
   material_id: string
