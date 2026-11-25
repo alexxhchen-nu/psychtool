@@ -109,8 +109,8 @@ def test_build_draft_request_input_uses_selected_claim_versions(ws):
     assert "first version" not in prompt
     assert "evaluator@example.com" in prompt
     assert [ref.model_dump() for ref in source_refs] == [
-        {"kind": "claim", "id": "c1", "version": 2},
-        {"kind": "claim", "id": "c2", "version": 1},
+        {"kind": "claim", "id": "c1", "version": 2, "evidence_ids": []},
+        {"kind": "claim", "id": "c2", "version": 1, "evidence_ids": []},
     ]
 
 

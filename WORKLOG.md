@@ -423,3 +423,15 @@
 - ADR 0016. R6 invalidation is PT-09; citecheck/draft filtering is PT-12.
 - Follow-up: push CI (`ci.yml` on push) failed once on R7-AC5 because `setupCase` posted materials before the synthetic-confirmation request had landed (403). The test now waits for the confirmation notice to disappear, matching `upload.e2e.ts`. The pull_request CI run on the same head was already green.
 
+## 2026-11-24 23:59 CST — PT-20 sentence evidence as the only source (GROK-51)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with two follow-up rounds (schema/migration, then suggestions/routes/lineage, then UI/e2e). The deepseek-flash fallback was checked first and was down (HTTP 524); it was not used. PT-09 was not started.
+
+### Scope delivered
+
+- Schema v7 adds the `claim_evidence` junction table (composite FKs block cross-case citation). `Claim` / `ClaimSuggestion` carry `evidence_ids`. A genuine v6→v7 migration links each existing claim to the active same-case, same-passage sentence evidence; superseded and cross-case rows are not linked; claims whose passage has no evidence get zero junction rows. Audit rows are not rewritten; the chain still verifies.
+- `suggest_claims` emits one paragraph suggestion per passage that has stored active sentence evidence, citing those `ev_` ids (never empty). The parallel paragraph-only path is gone. `accept_suggestion` and `POST /claims` require at least one id and reject unknown or cross-case ids with a fixed message that does not reveal whether the id exists on another case.
+- Egress `SourceRef` for kind=claim records the cited ids; they persist in `source_refs`. Protected-content screening also covers the cited evidence quotes.
+- Intake suggestion cards show the cited ids (`data-testid="cited-evidence-ids"`). Walking-skeleton e2e asserts an `ev_` id is visible before accept.
+- ADR 0017. R6 invalidation remains PT-09.
+

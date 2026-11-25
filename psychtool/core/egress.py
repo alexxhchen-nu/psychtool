@@ -147,6 +147,10 @@ class SourceRef(BaseModel):
     kind: Literal["claim", "material", "draft"]
     id: str
     version: int
+    # Sentence evidence ids a kind="claim" ref cites (ADR 0017): the egress
+    # lineage records exactly which stored evidence rows fed the prompt.
+    # Empty for material/draft refs and for pre-v7 claims without citations.
+    evidence_ids: list[str] = []
 
 
 class OutboundEnvelope(BaseModel):
@@ -303,6 +307,14 @@ def _screen_material_sources(store: EgressStore, source_refs: list[SourceRef]) -
                     "protected-content check failed during egress preparation"
                 ) from None
             texts.append(claim.text)
+            # ADR 0017: the cited sentence evidence is material-derived text
+            # too — screen the stored quotes, not only the claim's own text.
+            try:
+                texts.extend(store.evidence_quotes_for(ref.evidence_ids))
+            except Exception:
+                raise EgressProtectedContentError(
+                    "protected-content check failed during egress preparation"
+                ) from None
         elif ref.kind == "material":
             try:
                 material = store.get_material(ref.id, ref.version)

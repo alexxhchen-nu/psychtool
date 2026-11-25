@@ -161,7 +161,7 @@ def test_build_section_request_input_builds_complete_prompt_and_claim_refs(ws):
     assert "latest version" in prompt
     assert "evaluator@example.com" in prompt
     assert [ref.model_dump() for ref in source_refs] == [
-        {"kind": "claim", "id": "c1", "version": 2}
+        {"kind": "claim", "id": "c1", "version": 2, "evidence_ids": []}
     ]
 
 
