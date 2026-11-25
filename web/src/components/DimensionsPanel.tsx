@@ -11,7 +11,8 @@ import {
   reviewSummaryLine,
 } from '../dimensions'
 import { highlightParts, reasonLine, roleLabel } from '../evidence'
-import type { DimensionsResponse, EvidenceItem, Material } from '../types'
+import { correctionToast } from '../correction'
+import type { DimensionsResponse, EvidenceInvalidation, EvidenceItem, Material } from '../types'
 
 const SUB_WITH_LIST =
   'Every dimension name comes from your upload “{title}”. The system does not use any built-in official list or criteria text.'
@@ -30,9 +31,11 @@ interface DimensionsPanelProps {
   materials: Material[]
   busy: boolean
   syntheticConfirmed: boolean
+  /** R6 (PT-09 / ADR 0018): the case-level toast + pill/revision updater. */
+  onCorrection?: (toast: string, invalidation: EvidenceInvalidation) => void
 }
 
-export default function DimensionsPanel({ workspaceId, materials, busy, syntheticConfirmed }: DimensionsPanelProps) {
+export default function DimensionsPanel({ workspaceId, materials, busy, syntheticConfirmed, onCorrection }: DimensionsPanelProps) {
   const [view, setView] = useState<DimensionsResponse | null>(null)
   const [selected, setSelected] = useState<EvidenceItem | null>(null)
   const [listHighlight, setListHighlight] = useState<{ dimensionId: string } | null>(null)
@@ -69,8 +72,12 @@ export default function DimensionsPanel({ workspaceId, materials, busy, syntheti
     if (current === null || saving) return
     setSaving(true)
     try {
-      await setEvidenceDimension(workspaceId, item.id, choice)
+      const result = await setEvidenceDimension(workspaceId, item.id, choice)
       if (lifecycle.current !== current) return
+      // R6 (PT-09): surface the server's exact toast and let the case level
+      // update section pills / egress revision (never unsaved editor text).
+      const toast = correctionToast(result)
+      if (toast && result.invalidation) onCorrection?.(toast, result.invalidation)
       const response = await getDimensions(workspaceId)
       if (lifecycle.current !== current) return
       setView(response)

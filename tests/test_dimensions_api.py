@@ -5,7 +5,8 @@
 - R7-AC3: mapped item shows name, <=140-char reason quoting visible text,
   and the dimension carries a clickable source range (passage/span).
 - R7-AC4: she changes the dimension in one step (PUT); no re-upload.
-  Invalidating citing sentences/sections is PT-09 — NOT here.
+  The R6 cascade on that change (PT-09 / ADR 0018) is covered in
+  tests/test_evidence_cascade.py and tests/test_evidence_cascade_api.py.
 - R7-AC5: unsure mapping -> "Needs review"; never a guessed dimension.
 - R7-AC6: nowhere a diagnosis-style phrase; every view shows the disclaimer.
 - R7-AC7: mapping data never enters sections, drafts or egress payloads.
@@ -193,7 +194,17 @@ def test_r7_ac4_change_dimension_in_one_step(client):
     reread = _dimensions(client)
     changed = next(i for i in reread["items"] if i["id"] == mapped["id"])
     assert changed["dimension_name"] == "Sleep and routine"
-    # NOTE (PT-09): citing sentences/sections are NOT invalidated here.
+    # R6 (PT-09 / ADR 0018): the PUT response carries the store's structured
+    # invalidation summary; nothing cited this item, so all lists are empty.
+    assert body["invalidation"] == {
+        "claims": [],
+        "sections": [],
+        "egress": [],
+        "toast": (
+            "Your change was saved. Nothing else needed to be updated. "
+            "Unsaved text was not changed."
+        ),
+    }
 
 
 def test_r7_ac4_confirm_and_none_and_reset(client):

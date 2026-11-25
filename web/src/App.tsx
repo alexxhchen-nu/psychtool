@@ -1,9 +1,10 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { apiRequest, createCase, getWorkspace, jsonRequest, workspaceUrl } from './api'
-import type { Claim, ClaimSuggestion, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
+import type { Claim, ClaimSuggestion, EvidenceInvalidation, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
 import { validateCaseId } from './case-form'
 import { citedEvidenceLine } from './claims'
+import { applyInvalidationToSections } from './correction'
 import MaterialUploadPanel from './components/MaterialUploadPanel'
 import PasteMaterialPanel from './components/PasteMaterialPanel'
 import DimensionsPanel from './components/DimensionsPanel'
@@ -137,10 +138,26 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
   const [busy, setBusy] = useState(false)
   const [sourceRevision, setSourceRevision] = useState(0)
   const [syntheticConfirmed, setSyntheticConfirmed] = useState(false)
+  // PT-09 (R6 / ADR 0018): the exact server toast after a correction. The
+  // toast is rendered verbatim; the client never invents counts.
+  const [correctionToast, setCorrectionToast] = useState('')
   const alive = useRef(false)
   const mutation = useRef(false)
   const base = workspaceUrl(workspaceId)
   const changeBusy = useCallback((value: boolean) => { mutation.current = value; setBusy(value); onBusyChange(value) }, [onBusyChange])
+
+  // R6: a correction in the Evidence or Dimensions panel cascades on the
+  // server in one transaction. Here we only (1) show the server's toast,
+  // (2) flip the status pill of an open APPROVED section the server returned
+  // to needs_review, and (3) bump sourceRevision so the egress panel notices
+  // an invalidated request. The section editor's textarea value is local
+  // state and is NEVER rewritten from here.
+  const correctionApplied = useCallback((toast: string, invalidation: EvidenceInvalidation) => {
+    if (!alive.current) return
+    setCorrectionToast(toast)
+    setSections((items) => applyInvalidationToSections(items, invalidation))
+    if (invalidation.egress.length > 0) setSourceRevision((value) => value + 1)
+  }, [])
 
   useEffect(() => {
     alive.current = true
@@ -224,6 +241,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
       </div>
     </section>
     {error && <div className="error-banner" role="alert">{error}</div>}
+    {correctionToast && <div className="correction-toast" role="status" data-testid="correction-toast">{correctionToast}</div>}
     {!ready && !error && <p role="status">Loading case…</p>}
     {ready && <div hidden={!showUpload}><fieldset className="upload-lock" disabled={busy}><MaterialUploadPanel workspaceId={workspaceId} confirmed={syntheticConfirmed} onConfirmed={() => setSyntheticConfirmed(true)} onUploaded={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset></div>}
     {ready && showPaste && <fieldset className="upload-lock" disabled={busy}><PasteMaterialPanel workspaceId={workspaceId} onPasted={uploaded} onReview={reviewMaterial} onBusyChange={changeBusy} /></fieldset>}
@@ -256,8 +274,8 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
       <label className="field-label">Identifying names ({names.length} saved)<textarea className="names-input" rows={5} value={namesText} disabled={busy} onChange={(event) => setNamesText(event.target.value)} /></label>
       <button className="primary-button" disabled={busy} onClick={saveNames}>Save names</button>
     </section>}
-    {ready && showEvidence && <EvidencePanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} />}
-    {ready && showDimensions && <DimensionsPanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} syntheticConfirmed={syntheticConfirmed} />}
+    {ready && showEvidence && <EvidencePanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} onCorrection={correctionApplied} />}
+    {ready && showDimensions && <DimensionsPanel key={workspaceId} workspaceId={workspaceId} materials={materials} busy={busy} syntheticConfirmed={syntheticConfirmed} onCorrection={correctionApplied} />}
     {ready && selected && selectedState && <div className="report-grid">
       <aside className="section-rail" aria-label="Report sections"><div className="rail-heading"><span>Document map</span><strong>{template.sections.length} sections</strong></div>
         <ol>{template.sections.map((section, index) => {
@@ -293,6 +311,22 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
   const inFlight = useRef(false)
   const alive = useRef(false)
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+  // R6 (PT-09 / ADR 0018): when a correction returns this open APPROVED
+  // section to needs_review on the server, the pill follows — but ONLY the
+  // status. The textarea keeps her unsaved text (form.text is never synced
+  // from `initial`), and the editor is never remounted for this.
+  useEffect(() => {
+    if (initial.status !== 'needs_review') return
+    let flipped = false
+    setForm((current) => {
+      if (current.status !== 'approved') return current
+      flipped = true
+      return { ...current, status: 'needs_review' }
+    })
+    if (flipped) {
+      setMessage('A source correction returned this section to Needs review. Your unsaved text was not changed.')
+    }
+  }, [initial.status])
   const generated = useCallback((text: string, claimIds: string[]) => {
     if (!alive.current) return
     setForm((current) => ({ ...current, text, claimIds, status: 'draft', reviewer: '' }))

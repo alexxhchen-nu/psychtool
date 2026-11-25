@@ -435,3 +435,15 @@
 - Intake suggestion cards show the cited ids (`data-testid="cited-evidence-ids"`). Walking-skeleton e2e asserts an `ev_` id is visible before accept.
 - ADR 0017. R6 invalidation remains PT-09.
 
+
+## 2026-11-25 11:42 CST — PT-09 one-step correction (GROK-39 / R6)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with two follow-up rounds (store cascade + atomicity, then routes/toast payload, then UI/e2e). The deepseek-flash fallback was checked first and was up; it was not used. PT-10 was not started.
+
+### Scope delivered
+
+- When the effective displayed category or dimension actually changes, one SQLite transaction updates the evidence row and audit, returns citing verified/conflict-viewed claims to pending (text and evidence ids unchanged), returns approved sections that cite any claim built on that evidence to Needs review (saved text unchanged), and invalidates prepared/approved (not sent) egress requests that reference the evidence. Role-only writes, no-op writes, and confirming an already-displayed suggestion do not cascade. Schema stays v7.
+- Both PUT routes return a structured `invalidation` (id lists + the exact English toast). The SPA renders that toast verbatim (`data-testid="correction-toast"`). Unsaved section editor text is never rewritten; an open approved section may only have its status pill updated.
+- Tests: store atomicity (injected mid-transaction failure rolls everything back), toast 0/1/2+ counts, category reset when the effective label changes, approved sections and kind=claim-only egress on already-pending claims, API parity, bun helpers (toast + unsaved text not rewritten), and a Playwright e2e that types unsaved text, changes the cited category, checks the toast, and confirms the prepared request is invalidated.
+- ADR 0018. Supervisor review findings (category-reset trigger; section/egress matching every citing claim) were fixed in chunk 2. Supervisor also fixed the e2e after the worker hit its step limit: accept the stored suggestion, share the Playwright DB path across runner and worker, mark the claim verified through CaseStore, seed sessionStorage so the egress panel can restore an API-prepared request, and only show the editor “Needs review” note when the open approved section actually flips.
+

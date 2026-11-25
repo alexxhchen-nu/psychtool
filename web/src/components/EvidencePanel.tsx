@@ -12,7 +12,8 @@ import {
   setByText,
 } from '../evidence'
 import { dimensionChipLabel } from '../dimensions'
-import type { EvidenceItem, EvidenceResponse, Material } from '../types'
+import { correctionToast } from '../correction'
+import type { EvidenceInvalidation, EvidenceItem, EvidenceResponse, Material } from '../types'
 
 const HEADER_TEXT =
   "Each item is one sentence from this case's materials. Click an item to see where it comes from. This list is for you to check; it is not a conclusion."
@@ -23,9 +24,11 @@ interface EvidencePanelProps {
   workspaceId: string
   materials: Material[]
   busy: boolean
+  /** R6 (PT-09 / ADR 0018): the case-level toast + pill/revision updater. */
+  onCorrection?: (toast: string, invalidation: EvidenceInvalidation) => void
 }
 
-export default function EvidencePanel({ workspaceId, materials, busy }: EvidencePanelProps) {
+export default function EvidencePanel({ workspaceId, materials, busy, onCorrection }: EvidencePanelProps) {
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null)
   const [selected, setSelected] = useState<EvidenceItem | null>(null)
   const [error, setError] = useState('')
@@ -92,13 +95,18 @@ export default function EvidencePanel({ workspaceId, materials, busy }: Evidence
 
   // Her category/role choice: PUT, then reload the list so chips, reasons and
   // the selected item reflect what the server persisted (R5 / ADR 0015).
+  // R6 (PT-09): the response carries the same-transaction invalidation; the
+  // server's toast is surfaced verbatim and the case-level callback updates
+  // section pills / egress revision without touching unsaved editor text.
   async function choose(item: EvidenceItem, choice: { category?: EvidenceItem['category'] | null; role?: EvidenceItem['role'] | null }) {
     const current = lifecycle.current
     if (current === null || saving) return
     setSaving(true)
     try {
-      await setEvidenceChoice(workspaceId, item.id, choice)
+      const result = await setEvidenceChoice(workspaceId, item.id, choice)
       if (lifecycle.current !== current) return
+      const toast = correctionToast(result)
+      if (toast && result.invalidation) onCorrection?.(toast, result.invalidation)
       const response = await getEvidence(workspaceId)
       if (lifecycle.current !== current) return
       setEvidence(response)

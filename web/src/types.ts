@@ -175,6 +175,17 @@ export interface EvidenceChoiceInput {
   category?: EvidenceCategory | null
   role?: EvidenceRole | null
 }
+/**
+ * R6 (PT-09 / ADR 0018): what the store invalidated in the same transaction
+ * as her correction. `toast` is the exact English sentence the UI shows
+ * verbatim (chunk 3); the id lists are stable-sorted.
+ */
+export interface EvidenceInvalidation {
+  claims: string[]
+  sections: string[]
+  egress: string[]
+  toast: string
+}
 export interface EvidenceChoiceResult {
   id: string
   category: EvidenceCategory
@@ -185,6 +196,7 @@ export interface EvidenceChoiceResult {
   role_label: string
   role_reason: string
   role_set_by: 'clinician' | 'suggestion'
+  invalidation: EvidenceInvalidation
 }
 export interface PasteMaterialInput {
   material_id: string
@@ -236,4 +248,6 @@ export interface DimensionChoiceResult {
   dim_state: DimensionState
   dim_reason: string
   dim_set_by: 'clinician' | 'suggestion'
+  /** R6 (PT-09 / ADR 0018): same-transaction invalidation summary + toast. */
+  invalidation: EvidenceInvalidation
 }

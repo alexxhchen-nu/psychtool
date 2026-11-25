@@ -27,6 +27,7 @@ import os
 import re
 import sqlite3
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,44 @@ _SCHEMA_VERSION = 7
 # the suggested_*_reason fields.
 CLINICIAN_CATEGORY_REASON = "You chose this category."
 CLINICIAN_ROLE_REASON = "You chose this source role."
+
+# PT-09 (R6 / ADR 0018): the R6 cascade steps. A test may set
+# ``CaseStore.cascade_hook`` to a callable that receives the completed step
+# name and raises; because the whole cascade runs inside the setter's one
+# transaction, any raise rolls back everything — nothing is half-invalidated.
+R6_CASCADE_STEPS = ("claims", "sections", "egress")
+
+
+def _r6_invalidation_toast(claims: int, sections: int, egress: int) -> str:
+    """Exact English toast for the R6 cascade (ADR 0018).
+
+    Count phrases only appear for non-zero lists; an all-empty cascade says
+    "Nothing else needed to be updated." The final sentence is always present:
+    saved text is never rewritten by this cascade.
+    """
+    parts = ["Your change was saved."]
+    if claims:
+        parts.append(
+            "1 citing statement is no longer marked verified."
+            if claims == 1
+            else f"{claims} citing statements are no longer marked verified."
+        )
+    if sections:
+        parts.append(
+            "1 section was returned to Needs review."
+            if sections == 1
+            else f"{sections} sections were returned to Needs review."
+        )
+    if egress:
+        parts.append(
+            "1 prepared request was invalidated and must be prepared again."
+            if egress == 1
+            else f"{egress} prepared requests were invalidated and must be prepared again."
+        )
+    if not (claims or sections or egress):
+        parts.append("Nothing else needed to be updated.")
+    parts.append("Unsaved text was not changed.")
+    return " ".join(parts)
 
 _SCHEMA_STATEMENTS = (
     """
@@ -941,6 +980,10 @@ class CaseStore:
         # the send route sets this before calling send_approved so the audit
         # row for ``egress.send`` can record it. Allowlist-validated on use.
         self.audit_destination: str | None = None
+        # PT-09 (R6 / ADR 0018) test hook: called with each completed cascade
+        # step name ("claims", "sections", "egress"); a raise rolls the whole
+        # setter transaction back. Production code never sets this.
+        self.cascade_hook: Callable[[str], None] | None = None
 
     @property
     def case_id(self) -> str:
@@ -2060,6 +2103,225 @@ class CaseStore:
         ).fetchall()
         return [row["quote"] for row in rows]
 
+    # -- R6 cascade (PT-09 / ADR 0018) ----------------------------------------
+
+    def _latest_citing_claim_ids(
+        self, connection: sqlite3.Connection, evidence_id: str
+    ) -> list[str]:
+        """Every LATEST-version claim that cites this evidence, any status.
+
+        Section and egress matching must use this full set: an approved
+        section citing an already-pending claim still built on this evidence
+        has to return to needs_review (R6-AC1), and a prepared request whose
+        only link is a kind=claim ref to such a claim has to be invalidated.
+        The toast's ``claims`` list is narrower — only the claims actually
+        returned to pending by :meth:`_cascade_citing_claims`.
+        """
+        rows = connection.execute(
+            """
+            SELECT c.claim_id FROM claims c
+            JOIN (
+                SELECT claim_id, MAX(version) AS max_version
+                FROM claims WHERE case_id = ? GROUP BY claim_id
+            ) latest ON latest.claim_id = c.claim_id
+                     AND latest.max_version = c.version
+            JOIN claim_evidence ce
+              ON ce.case_id = c.case_id AND ce.claim_id = c.claim_id
+             AND ce.version = c.version
+            WHERE c.case_id = ? AND ce.evidence_id = ?
+            ORDER BY c.claim_id
+            """,
+            (self._case_id, self._case_id, evidence_id),
+        ).fetchall()
+        return [row["claim_id"] for row in rows]
+
+    def _cascade_citing_claims(
+        self, connection: sqlite3.Connection, evidence_id: str
+    ) -> list[str]:
+        """New versions of verified claims citing this evidence, -> pending.
+
+        Only the LATEST version of each citing claim is considered, and only
+        when it is ``verified`` or ``conflict-viewed``. The new version keeps
+        the identical text and evidence ids; only ``verification_status``
+        becomes ``pending``. Claim text is never rewritten here.
+        """
+        rows = connection.execute(
+            """
+            SELECT c.claim_id FROM claims c
+            JOIN (
+                SELECT claim_id, MAX(version) AS max_version
+                FROM claims WHERE case_id = ? GROUP BY claim_id
+            ) latest ON latest.claim_id = c.claim_id
+                     AND latest.max_version = c.version
+            JOIN claim_evidence ce
+              ON ce.case_id = c.case_id AND ce.claim_id = c.claim_id
+             AND ce.version = c.version
+            WHERE c.case_id = ? AND ce.evidence_id = ?
+              AND c.verification_status IN ('verified', 'conflict-viewed')
+            ORDER BY c.claim_id
+            """,
+            (self._case_id, self._case_id, evidence_id),
+        ).fetchall()
+        claim_ids: list[str] = []
+        for row in rows:
+            # mark_claim_status copies every field and bumps only
+            # verification_status; claim text and evidence ids are unchanged.
+            self.mark_claim_status(row["claim_id"], "pending")
+            claim_ids.append(row["claim_id"])
+        return claim_ids
+
+    def _cascade_citing_sections(
+        self, connection: sqlite3.Connection, citing_claim_ids: list[str]
+    ) -> list[str]:
+        """Approved sections citing any claim built on this evidence.
+
+        ``citing_claim_ids`` is EVERY latest-version claim citing the
+        evidence (any status), not only the ones just flipped to pending —
+        an approved section built on an already-pending claim still returns
+        to needs_review. A new version is written via ``save_section`` with
+        identical text, claim_ids and reviewer; only the status changes.
+        Draft/empty sections are left alone. Returns the affected section
+        ids, stable-sorted.
+        """
+        if not citing_claim_ids:
+            return []
+        import json as _json
+
+        placeholders = ", ".join("?" for _ in citing_claim_ids)
+        rows = connection.execute(
+            f"""
+            SELECT s.template_id, s.section_id, s.template_version, s.text,
+                   s.claim_ids, s.review_gate, s.reviewer
+            FROM sections s
+            JOIN (
+                SELECT template_id, section_id, MAX(version) AS max_version
+                FROM sections WHERE case_id = ?
+                GROUP BY template_id, section_id
+            ) latest ON latest.template_id = s.template_id
+                     AND latest.section_id = s.section_id
+                     AND latest.max_version = s.version
+            WHERE s.case_id = ? AND s.status = 'approved'
+              AND EXISTS (
+                  SELECT 1 FROM json_each(s.claim_ids) je
+                  WHERE je.value IN ({placeholders})
+              )
+            ORDER BY s.template_id, s.section_id
+            """,
+            (self._case_id, self._case_id, *citing_claim_ids),
+        ).fetchall()
+        section_ids: list[str] = []
+        for row in rows:
+            self.save_section(
+                template_id=row["template_id"],
+                template_version=row["template_version"],
+                section_id=row["section_id"],
+                text=row["text"],
+                claim_ids=_json.loads(row["claim_ids"]),
+                status="needs_review",
+                review_gate=row["review_gate"],
+                reviewer=row["reviewer"],
+                updated_at=_utcnow(),
+            )
+            section_ids.append(row["section_id"])
+        return sorted(section_ids)
+
+    def _cascade_egress_requests(
+        self,
+        connection: sqlite3.Connection,
+        evidence_id: str,
+        citing_claim_ids: list[str],
+    ) -> list[str]:
+        """Invalidate prepared/approved requests that reference this evidence.
+
+        A request references the evidence when any ``source_ref`` lists the
+        evidence id directly, or when a ``kind="claim"`` ref names a latest-
+        version claim citing it (``citing_claim_ids`` — EVERY citing claim,
+        any status, so a ref to an already-pending claim still matches).
+        ``sent`` and ``send_interrupted`` requests are never touched;
+        unrelated requests are not touched. Each invalidation goes through
+        ``save_egress_request`` so ``egress.invalidate`` is audited in the
+        same transaction.
+        """
+        import json as _json
+
+        from psychtool.core.egress import EgressRequest
+
+        rows = connection.execute(
+            "SELECT request_id, purpose, data_tier, provider_base_url, envelope,"
+            " source_refs, identifier_categories, content_hash, status,"
+            " approval_mode, reviewer, approval_reason, prepared_at, approved_at,"
+            " sent_at"
+            " FROM egress_requests"
+            " WHERE case_id = ? AND status IN ('prepared', 'approved')"
+            " ORDER BY request_id",
+            (self._case_id,),
+        ).fetchall()
+        request_ids: list[str] = []
+        citing = set(citing_claim_ids)
+        for row in rows:
+            refs = _json.loads(row["source_refs"])
+            references = any(
+                evidence_id in (ref.get("evidence_ids") or [])
+                or (ref.get("kind") == "claim" and ref.get("id") in citing)
+                for ref in refs
+            )
+            if not references:
+                continue
+            request = EgressRequest(
+                request_id=row["request_id"],
+                workspace_id=self._case_id,
+                purpose=row["purpose"],
+                data_tier=row["data_tier"],
+                provider_base_url=row["provider_base_url"],
+                envelope=_json.loads(row["envelope"]),
+                source_refs=refs,
+                identifier_categories=_json.loads(row["identifier_categories"]),
+                content_hash=row["content_hash"],
+                status="invalidated",
+                approval_mode=row["approval_mode"],
+                reviewer=row["reviewer"],
+                approval_reason=row["approval_reason"],
+                prepared_at=row["prepared_at"],
+                approved_at=row["approved_at"],
+                sent_at=row["sent_at"],
+            )
+            self.save_egress_request(request)
+            request_ids.append(row["request_id"])
+        return sorted(request_ids)
+
+    def _r6_cascade(
+        self, connection: sqlite3.Connection, evidence_id: str
+    ) -> dict:
+        """Run the R6 cascade inside the caller's open transaction.
+
+        Steps run in order and each completed step is reported to
+        ``cascade_hook`` (a test hook); a raise there rolls the entire
+        transaction back, so evidence, claims, sections, egress and the audit
+        chain never end up half-invalidated. Section and egress matching use
+        EVERY latest claim citing this evidence; the returned ``claims`` list
+        holds only the ones actually returned to pending.
+        """
+        citing_claim_ids = self._latest_citing_claim_ids(connection, evidence_id)
+        claim_ids = self._cascade_citing_claims(connection, evidence_id)
+        if self.cascade_hook is not None:
+            self.cascade_hook("claims")
+        section_ids = self._cascade_citing_sections(connection, citing_claim_ids)
+        if self.cascade_hook is not None:
+            self.cascade_hook("sections")
+        request_ids = self._cascade_egress_requests(
+            connection, evidence_id, citing_claim_ids
+        )
+        if self.cascade_hook is not None:
+            self.cascade_hook("egress")
+        return {
+            "claims": claim_ids,
+            "sections": section_ids,
+            "egress": request_ids,
+            "toast": _r6_invalidation_toast(
+                len(claim_ids), len(section_ids), len(request_ids)
+            ),
+        }
+
     def set_evidence_choice(
         self,
         evidence_id: str,
@@ -2077,12 +2339,32 @@ class CaseStore:
         The audit row records the allowlisted VALUE she picked — the category
         or role key, or ``reset`` (ADR 0016 / Alex's PT-07 answer 3).
         Unknown id raises KeyError; a non-allowlisted key raises ValueError.
+
+        R6 (PT-09 / ADR 0018): when the EFFECTIVE category key actually
+        changes — her stored choice versus the suggestion it replaces —
+        citing verified claims, approved sections and unsent egress requests
+        are invalidated in the SAME transaction. Role-only writes and no-op
+        writes never cascade. The returned evidence row gains an
+        ``invalidation`` summary with the exact toast string.
         """
         if set_category and category is not None and category not in CATEGORY_KEYS:
             raise ValueError("category is not on the allowlist")
         if set_role and role is not None and role not in ROLE_KEYS:
             raise ValueError("role is not on the allowlist")
-        self.get_evidence(evidence_id)  # unknown id -> KeyError before any write
+        current = self.get_evidence(evidence_id)  # unknown id -> KeyError first
+        # The effective category is her choice when set, else the suggestion;
+        # the cascade fires only when that effective key actually changes.
+        # A reset (set_category with category=None) returns the effective
+        # category to the suggestion, so it cascades whenever her stored
+        # choice differed from it — and stays a no-op when it did not.
+        before_category = current["category"] or current["suggested_category"]
+        if set_category:
+            after_category = (
+                category if category is not None else current["suggested_category"]
+            )
+        else:
+            after_category = before_category
+        cascade = set_category and after_category != before_category
         with self._store.transaction() as connection:
             current = self.get_evidence(evidence_id)
             if set_category and current["category"] != category:
@@ -2111,7 +2393,19 @@ class CaseStore:
                     object_id=evidence_id,
                     value=role if role is not None else "reset",
                 )
-        return self.get_evidence(evidence_id)
+            invalidation = (
+                self._r6_cascade(connection, evidence_id)
+                if cascade
+                else {
+                    "claims": [],
+                    "sections": [],
+                    "egress": [],
+                    "toast": _r6_invalidation_toast(0, 0, 0),
+                }
+            )
+        row = self.get_evidence(evidence_id)
+        row["invalidation"] = invalidation
+        return row
 
     def set_evidence_dimension(
         self,
@@ -2138,6 +2432,14 @@ class CaseStore:
         ``dim_`` id — never her text, never a dimension name (ADR 0016).
         Her choice is never overwritten by refresh (same rule as
         category/role).
+
+        R6 (PT-09 / ADR 0018): when the EFFECTIVE dimension id actually
+        changes — including to "no dimension" — citing verified claims,
+        approved sections and unsent egress requests are invalidated in the
+        SAME transaction. Confirming the already-displayed suggestion (the
+        effective id does not change) and no-op writes never cascade. The
+        returned evidence row gains an ``invalidation`` summary with the
+        exact toast string.
         """
         current = self.get_evidence(evidence_id)  # KeyError before any write
         if action is not None and dimension_id is not None:
@@ -2148,6 +2450,10 @@ class CaseStore:
             raise ValueError("unknown dimension action")
         dimensions = self.list_dimensions()
         known_ids = {d["id"] for d in dimensions["dimensions"]}
+        # The effective dimension id mirrors list_evidence: her choice wins
+        # (a stale choice already shows as "no dimension"); otherwise the
+        # suggestion. The cascade fires only when this effective id changes.
+        effective_before = self._effective_dimension_id(current)
         if action == "confirm":
             if not current["suggested_dimension_id"]:
                 raise ValueError("this item has no dimension to confirm")
@@ -2164,6 +2470,8 @@ class CaseStore:
                 raise ValueError("dimension is not on the allowlist")
             new_choice, new_dimension = "changed", dimension_id
             audit_value = dimension_id
+        after = dict(current, dimension_choice=new_choice, dimension_id=new_dimension)
+        cascade = self._effective_dimension_id(after) != effective_before
         with self._store.transaction() as connection:
             if (
                 current["dimension_choice"] != new_choice
@@ -2181,7 +2489,36 @@ class CaseStore:
                     object_id=evidence_id,
                     value=audit_value,
                 )
-        return self.get_evidence(evidence_id)
+            invalidation = (
+                self._r6_cascade(connection, evidence_id)
+                if cascade
+                else {
+                    "claims": [],
+                    "sections": [],
+                    "egress": [],
+                    "toast": _r6_invalidation_toast(0, 0, 0),
+                }
+            )
+        row = self.get_evidence(evidence_id)
+        row["invalidation"] = invalidation
+        return row
+
+    def _effective_dimension_id(self, row: dict) -> str | None:
+        """The dimension id the UI shows for this evidence row.
+
+        Her confirmed/changed choice wins when it is still in the current
+        list (a stale choice shows as no dimension, like ``list_evidence``);
+        a rejection is no dimension; otherwise the current suggestion.
+        """
+        current_dimensions = self._load_dimensions(self._db)
+        current_ids = (
+            {d.id for d in current_dimensions} if current_dimensions else set()
+        )
+        if row["dimension_choice"] in ("confirmed", "changed"):
+            return row["dimension_id"] if row["dimension_id"] in current_ids else None
+        if row["dimension_choice"] == "rejected":
+            return None
+        return row["suggested_dimension_id"]
 
     # Status transitions that must leave exactly one audit row in the same
     # transaction as the state change itself (ADR 0011).
@@ -2316,6 +2653,41 @@ class CaseStore:
             approved_at=row["approved_at"],
             sent_at=row["sent_at"],
         )
+
+    def list_egress_requests(self):
+        """Every egress request in this case, request-id sorted (read-only)."""
+        import json as _json
+
+        from psychtool.core.egress import EgressRequest, OutboundEnvelope, SourceRef
+
+        rows = self._db.execute(
+            "SELECT * FROM egress_requests WHERE case_id = ? ORDER BY request_id",
+            (self._case_id,),
+        ).fetchall()
+        return [
+            EgressRequest(
+                request_id=row["request_id"],
+                workspace_id=row["case_id"],
+                purpose=row["purpose"],
+                data_tier=row["data_tier"],
+                provider_base_url=row["provider_base_url"],
+                envelope=OutboundEnvelope.model_validate(_json.loads(row["envelope"])),
+                source_refs=[
+                    SourceRef.model_validate(ref)
+                    for ref in _json.loads(row["source_refs"])
+                ],
+                identifier_categories=_json.loads(row["identifier_categories"]),
+                content_hash=row["content_hash"],
+                status=row["status"],
+                approval_mode=row["approval_mode"],
+                reviewer=row["reviewer"],
+                approval_reason=row["approval_reason"],
+                prepared_at=row["prepared_at"],
+                approved_at=row["approved_at"],
+                sent_at=row["sent_at"],
+            )
+            for row in rows
+        ]
 
     def request_lock_key(self, request_id: str) -> str:
         from psychtool.core.egress import _validate_request_id

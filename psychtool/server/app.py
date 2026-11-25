@@ -480,7 +480,8 @@ def create_app(session_token: str | None = None) -> FastAPI:
         categorization run at upload time or via the refresh route), latest
         material versions only, case-scoped. Effective category/role is her
         choice when set, otherwise the current suggestion. R6 invalidation of
-        sentences/sections/egress on correction is deferred to PT-09.
+        citing claims/sections/egress on correction runs in the store
+        (ADR 0018); this read-only route never triggers it.
         """
         case = _case(case_id)
         category_labels, role_labels = _evidence_labels()
@@ -518,7 +519,17 @@ def create_app(session_token: str | None = None) -> FastAPI:
 
     @app.put("/api/workspaces/{case_id}/evidence/{evidence_id}")
     def put_evidence(case_id: str, evidence_id: str, body: EvidenceChoicePayload) -> dict:
-        """Record her category/role choice for one evidence item (R5)."""
+        """Record her category/role choice for one evidence item (R5).
+
+        R6 (ADR 0018): when the effective category actually changes, the
+        store cascades in the same transaction — citing verified claims
+        return to pending, approved sections citing them return to
+        needs_review, and unsent egress requests referencing the evidence are
+        invalidated. The structured ``invalidation`` summary (id lists plus
+        the exact toast string) is passed through unchanged so the SPA can
+        show it; role-only and no-op writes return empty lists with the
+        no-cascade toast.
+        """
         if "category" not in body.model_fields_set and "role" not in body.model_fields_set:
             raise HTTPException(status_code=400, detail="invalid evidence choice")
         if body.category is not None and body.category not in CATEGORY_KEYS:
@@ -567,6 +578,7 @@ def create_app(session_token: str | None = None) -> FastAPI:
             "role_set_by": role_set_by,
             "suggested_role": row["suggested_role"],
             "suggested_role_reason": row["role_reason"],
+            "invalidation": row["invalidation"],
         }
 
     @app.get("/api/workspaces/{case_id}/dimensions")
@@ -587,8 +599,12 @@ def create_app(session_token: str | None = None) -> FastAPI:
         """Record her dimension choice for one evidence item (R7-AC4).
 
         One step, one transaction, one ``evidence.set_dimension`` audit row
-        (allowlisted value only — never her text). Invalidating citing
-        sentences/sections is PT-09 and does not happen here.
+        (allowlisted value only — never her text). R6 (ADR 0018): when the
+        effective dimension id actually changes, the store cascades in the
+        same transaction (citing verified claims -> pending, approved
+        sections -> needs_review, unsent referencing egress requests ->
+        invalidated) and the structured ``invalidation`` summary — id lists
+        plus the exact toast string — is passed through unchanged.
         """
         if (body.action is None) == (body.dimension_id is None):
             raise HTTPException(status_code=400, detail="invalid dimension choice")
@@ -596,7 +612,7 @@ def create_app(session_token: str | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid dimension choice")
         case = _case(case_id)
         try:
-            case.set_evidence_dimension(
+            row = case.set_evidence_dimension(
                 evidence_id,
                 action=body.action,
                 dimension_id=body.dimension_id,
@@ -616,6 +632,7 @@ def create_app(session_token: str | None = None) -> FastAPI:
             "dim_state": item["dim_state"] if item else None,
             "dim_reason": item["dim_reason"] if item else None,
             "dim_set_by": item["dim_set_by"] if item else None,
+            "invalidation": row["invalidation"],
         }
 
     @app.get("/api/workspaces/{case_id}/materials/{material_id}/suggestions")
