@@ -8,6 +8,11 @@ Two entry points:
   accepts only UTF-8 ``.txt``/``.md`` and rejects everything else with a
   fixed ``(reason, message)`` pair. It never runs OCR and its messages never
   quote the filename or the content.
+
+R13 (ADR 0013): every upload — server file upload, server paste, and the
+shared :func:`import_upload` choke point — is screened for protected test
+content before anything is stored. Blocked passages never reach the material
+store; if the screen itself errors the whole upload is rejected (fail-closed).
 """
 
 from __future__ import annotations
@@ -17,8 +22,17 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Union
 
+from psychtool.core.protected import (
+    PROTECTED_CHECK_FAILED_MESSAGE,
+    PROTECTED_CHECK_FAILED_REASON,
+    PROTECTED_CONTENT_MESSAGE,
+    PROTECTED_CONTENT_REASON,
+    ProtectedContentError,
+    filter_protected_passages as _filter_protected_passages,
+    find_protected,
+)
 from psychtool.core.redact import find_identifiers, redact_text
-from psychtool.core.workspace import Material, get_known_names, import_material, split_passages
+from psychtool.core.workspace import Material, Passage, get_known_names, import_material, split_passages
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from psychtool.store.sqlite_store import CaseStore
@@ -41,6 +55,12 @@ SERVER_UPLOAD_MESSAGES = {
     "empty": "The file contains no text.",
 }
 SCAN_SUFFIXES = OCR_SUFFIXES  # R12: scans/images rejected on the server, no OCR
+
+# R13 rejection vocabulary and the shared passage filter live in
+# ``psychtool.core.protected`` (ADR 0013); they are re-imported above so
+# existing callers keep working: PROTECTED_CONTENT_REASON,
+# PROTECTED_CHECK_FAILED_REASON, PROTECTED_CONTENT_MESSAGE,
+# PROTECTED_CHECK_FAILED_MESSAGE, ProtectedContentError, _filter_protected_passages.
 
 
 class ServerUploadError(ValueError):
@@ -107,31 +127,71 @@ def _is_case_store(target: object) -> bool:
 
 
 def import_upload(target: UploadTarget, *, filename: str, data: bytes,
-                  material_id: str, title: str, provider: str, date: str) -> tuple[Material, list[dict]]:
+                  material_id: str, title: str, provider: str, date: str) -> tuple[Material, list[dict], int]:
+    """Import one upload, dropping protected passages before any store write.
+
+    Returns ``(material, identifier_findings, blocked_count)``. Raises
+    :class:`ProtectedContentError` when every passage is blocked
+    (``protected_content``) or the check itself fails
+    (``protected_check_failed``); in both cases nothing is written except the
+    block audit row for the all-blocked case (ADR 0013).
+    """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", material_id):
         raise ValueError("material id must be a short anonymous slug")
     text = parse_upload(filename, data)
+    passages, blocked_count, blocked_hash = _filter_protected_passages(
+        split_passages(text)
+    )
     if _is_case_store(target):
         names = target.get_known_names()
-        findings = find_identifiers(text, known_names=names)
-        safe_text, _ = redact_text(text, known_names=names)
+        # Findings are computed over the KEPT passages only: nothing about
+        # blocked passages may leak into the response (ADR 0013).
+        kept_text = "\n\n".join(passage.text for passage in passages)
+        findings = find_identifiers(kept_text, known_names=names)
         safe_title, _ = redact_text(title, known_names=names)
         safe_provider, _ = redact_text(provider, known_names=names)
         safe_date, _ = redact_text(date, known_names=names)
+        # Redact only the passages that survived the screen; blocked text is
+        # never stored, so it is never redacted for storage either.
+        safe_passages = [
+            Passage(id=passage.id, text=redact_text(passage.text, known_names=names)[0])
+            for passage in passages
+        ]
+        if not safe_passages:
+            # All-blocked: no material row, but the block itself is audited
+            # (its own transaction, ADR 0011/0013).
+            target.append_audit(
+                case_id=target.case_id,
+                action="material.protected_blocked",
+                object_type="material",
+                object_id=material_id,
+                content_hash=blocked_hash,
+                item_count=blocked_count,
+            )
+            raise ProtectedContentError(PROTECTED_CONTENT_REASON)
         material = target.import_material(
             material_id=material_id, title=safe_title, provider=safe_provider,
-            date=safe_date, passages=split_passages(safe_text),
+            date=safe_date, passages=safe_passages,
+            blocked_count=blocked_count, blocked_hash=blocked_hash,
         )
         return material, [{"category": hit["category"], "label": hit["label"]}
-                          for hit in findings]
+                          for hit in findings], blocked_count
     workspace = Path(target)
     names = get_known_names(workspace)
-    findings = find_identifiers(text, known_names=names)
-    safe_text, _ = redact_text(text, known_names=names)
+    if not passages:
+        # All-blocked in the JSON branch: nothing is written (no audit row in
+        # the JSON store), so reject with the fixed reason.
+        raise ProtectedContentError(PROTECTED_CONTENT_REASON)
+    kept_text = "\n\n".join(passage.text for passage in passages)
+    findings = find_identifiers(kept_text, known_names=names)
     safe_title, _ = redact_text(title, known_names=names)
     safe_provider, _ = redact_text(provider, known_names=names)
     safe_date, _ = redact_text(date, known_names=names)
+    # The screen inside ``workspace.import_material`` re-runs on the kept
+    # passages and finds nothing (the filter is deterministic), so the count
+    # returned here stays the count computed above.
     material = import_material(workspace, material_id=material_id, title=safe_title,
-                               provider=safe_provider, date=safe_date, text=safe_text)
+                               provider=safe_provider, date=safe_date, text="\n\n".join(
+                                   passage.text for passage in passages))
     return material, [{"category": hit["category"], "label": hit["label"]}
-                      for hit in findings]
+                      for hit in findings], blocked_count

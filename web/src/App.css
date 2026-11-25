@@ -127,6 +127,7 @@ button:disabled, .primary-button:disabled, .secondary-button:disabled, .review-p
 .review-panel small { display: block; margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.65; }
 
 .error-banner { padding: 16px 20px; margin-bottom: 20px; color: #822e24; border: 1px solid #d6a59c; border-radius: var(--radius-control); background: #fff0ec; overflow-wrap: anywhere; }
+.held-back-notice { grid-column: 1 / -1; padding: 16px 20px; margin: 0; color: #5a4400; border: 1px solid #d9c48a; border-radius: var(--radius-control); background: #fdf6e3; overflow-wrap: anywhere; }
 .names-panel { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 24px; align-items: end; padding: 24px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--white); }
 .names-panel > * { min-width: 0; }
 .names-panel-copy h3 { margin: 0 0 12px; font: 500 26px/1.2 var(--font-document); }

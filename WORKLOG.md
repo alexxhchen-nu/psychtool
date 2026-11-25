@@ -303,3 +303,36 @@
   - The real `main()` with one store method forced to raise an exception carrying a marker → response `500 {"detail":"internal error"}` with the CSP header.
   - The log has only `unhandled error: RuntimeError`, with no marker and no Traceback.
   - Control run with the uvicorn filter removed: the marker and the Traceback both appear, which proves the filter is what stops them.
+
+## 2026-11-24 16:42 CST — PT-04 review answers from Alex, and PT-05 supervisor verification (GROK-35)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with three follow-up rounds after the step limit was hit. The deepseek-flash fallback was not triggered.
+
+### Alex's answers to the 2 PT-04 questions (2026-11-24)
+
+1. **Oversized uploads:** rejecting an oversized body before it is received (instead of spooling it and then returning 413) is a separate task. Not in PT-05.
+2. **Tracebacks in dev:** yes to a dev-only switch that logs full tracebacks. It is off by default and never allowed with real data. **Done in PT-05:** `PSYCHTOOL_DEBUG_TRACEBACKS=1` works only in the synthetic tier; with `PSYCHTOOL_DATA_TIER=real` the server refuses to start (exit 2), and `create_app` forces it off.
+
+### Supervisor direct fixes and review changes
+
+- Fixed a `return ... from exc` syntax error and a docstring typo left by the worker.
+- The JSON workspace import kept renumbering passages after a block, which would have pointed claims at the wrong passages. It now keeps the original passage ids, and rejects the whole import if a claim quotes protected text or cites a blocked passage.
+- The egress re-screen skipped refs it could not load (fail-open). Any load or check error now refuses the prepare.
+- Identifier findings are now computed over the kept paragraphs only.
+- Found in review: the CLI `psychtool import` command wrote to the JSON material store without the screen. The screen now runs inside `workspace.import_material`, which covers the CLI and the eval harness. The CLI prints a held-back line, or exits 1 with nothing written.
+- `fixtures/adolescent-background.json`: the synthetic sentence "本资料没有提供测验分数、诊断或常模资料。" matched the keyword list (a false positive of keyword matching). It now reads "…或标准化比较资料。" Meaning unchanged.
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **534 passed**; `bun test` → **120 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **5 passed** (new: `R13-AC1 norm table paragraph is held back`).
+- Mutation checks: with the keyword check disabled, 6 R13 tests fail; with the real-tier refusal removed, the switch test fails; with the screen removed from `workspace.import_material`, the 3 CLI tests fail.
+- Live CLI: `psychtool import` of a file with a "Scoring key: …" paragraph → exit 0 and a held-back line, with the text absent from the stored JSON. An all-blocked file → exit 1, no material file.
+- Live `psychtool-server` (synthetic):
+  - An upload with a "Norm table: …" paragraph → 200, `blocked_paragraphs: 1`, the plain reason shown. Only the 2 normal paragraphs are stored; the blocked text is in neither the DB dump, the response nor the log. One `material.protected_blocked` audit row (count 1 + sha256), and the chain verifies.
+  - "normal / Normally / 常规" → nothing blocked. All paragraphs blocked → 400 `protected_content`, no material. Paste is filtered the same way.
+  - Checker forced to raise → 503 `protected_check_failed`; material, passage and audit counts are unchanged.
+- Live traceback switch (one store method forced to raise a marker):
+  - Default → 500 and only `unhandled error: RuntimeError`; no marker, no Traceback.
+  - `=1` → a startup warning, and the Traceback and the marker are logged.
+  - `=yes` → off.
+  - `=1` with `PSYCHTOOL_DATA_TIER=real` → refuses to start, exit 2, no DB file created.

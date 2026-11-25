@@ -61,6 +61,10 @@ export interface UploadResult {
   material: Material
   identifier_findings: { category: string; label: string }[]
   requires_human_review: boolean
+  /** R13 (ADR 0013): how many paragraphs the protected-content screen held back. */
+  blocked_paragraphs?: number
+  /** Present only when blocked_paragraphs > 0; the server's fixed message. */
+  blocked_reason?: string
 }
 export interface SourceRef { kind: 'claim' | 'material' | 'draft'; id: string; version: number }
 export type EgressStatus = 'prepared' | 'approved' | 'sent' | 'invalidated' | 'send_interrupted'

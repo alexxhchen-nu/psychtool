@@ -11,6 +11,13 @@ traceback on ``uvicorn.error`` — which can quote request data. ``main``
 therefore runs uvicorn with a ``log_config`` that attaches a filter reducing
 those records to the exception type name (see
 :class:`UvicornErrorTraceFilter`).
+
+Dev-only exception (ADR 0013): ``PSYCHTOOL_DEBUG_TRACEBACKS=1`` restores full
+tracebacks for local debugging with synthetic data. It is honoured only when
+the data tier is synthetic; with ``PSYCHTOOL_DATA_TIER=real`` set, ``main``
+refuses to start (exit 2) instead of silently ignoring the flag, so the
+operator cannot believe they are running without tracebacks while actually
+having them. The filter is simply not installed in that mode.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ import sys
 
 import uvicorn
 
+from psychtool.config import debug_tracebacks_enabled, load_config
 from psychtool.server.selfcheck import DataDirError, check_data_dir_not_synced, run_self_checks
 from psychtool.store.sqlite_store import default_db_path
 
@@ -134,6 +142,22 @@ def main() -> None:
     _configure_logging()
     host = _resolve_host()
     port = _resolve_port()
+    config = load_config()
+    # Debug tracebacks (ADR 0013): the switch is env-only ("1") and forbidden
+    # with the real tier. Refuse here, loudly, before anything opens the DB;
+    # create_app independently forces the flag off for the real tier, so even
+    # a programmatic caller can never get tracebacks with real data.
+    if os.environ.get("PSYCHTOOL_DEBUG_TRACEBACKS") == "1":
+        if config.data_tier == "real":
+            print(
+                "refusing to start: PSYCHTOOL_DEBUG_TRACEBACKS=1 is a dev-only"
+                " switch and is never allowed with PSYCHTOOL_DATA_TIER=real",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        debug_tracebacks = True
+    else:
+        debug_tracebacks = False
     # Cheap pre-check so a cloud-synced data dir fails before the app builds;
     # the full check also runs inside run_self_checks below.
     try:
@@ -152,6 +176,15 @@ def main() -> None:
         host=host,
         token_source=app.state.session_token_source,
     )
+    if debug_tracebacks:
+        # Loud, once, at startup: anyone reading the log knows tracebacks may
+        # quote request text. (The app also logs a startup warning line.)
+        logging.getLogger("psychtool").warning(
+            "self-check warn: debug tracebacks ON (dev only; never with real data)"
+        )
+        # No type-only filter: the developer asked for full tracebacks.
+        uvicorn.run(app, host=host, port=port, log_config=None)
+        return
     # Passed as log_config (not applied here) so uvicorn installs the filter
     # before serving; a test that replaces uvicorn.run never configures
     # logging at all.

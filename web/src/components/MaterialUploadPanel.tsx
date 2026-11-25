@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { confirmSynthetic, uploadMaterial } from '../api'
 import type { UploadResult } from '../types'
-import { summarizeUpload, UPLOAD_ACCEPT, uploadErrorMessage, validateMaterialUpload } from '../upload'
+import { heldBackNotice, summarizeUpload, UPLOAD_ACCEPT, uploadErrorMessage, validateMaterialUpload } from '../upload'
 import type { UploadFieldErrors, UploadSummary } from '../upload'
 
 export const SYNTHETIC_NOTICE =
@@ -27,6 +27,7 @@ export default function MaterialUploadPanel({ workspaceId, confirmed, onConfirme
   const [fieldErrors, setFieldErrors] = useState<UploadFieldErrors>({})
   const [error, setError] = useState('')
   const [result, setResult] = useState<UploadSummary | null>(null)
+  const [heldBack, setHeldBack] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [noticeChecked, setNoticeChecked] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -76,6 +77,7 @@ export default function MaterialUploadPanel({ workspaceId, confirmed, onConfirme
     busyRef.current = true
     setBusy(true)
     setResult(null)
+    setHeldBack(null)
     const isCurrent = () => lifecycle.current === currentLifecycle
     try {
       onBusyChange(true)
@@ -88,6 +90,9 @@ export default function MaterialUploadPanel({ workspaceId, confirmed, onConfirme
       const uploaded = await uploadMaterial(workspaceId, form)
       if (!isCurrent()) return
       setResult(summarizeUpload(uploaded))
+      // R13 (ADR 0013): tell the clinician paragraphs were held back. There
+      // is deliberately no release/override action here in M1.
+      setHeldBack(heldBackNotice(uploaded.blocked_paragraphs))
       try {
         await onUploaded(uploaded)
       } catch {
@@ -224,6 +229,9 @@ export default function MaterialUploadPanel({ workspaceId, confirmed, onConfirme
         </button>
       </form>
       {error && <p className="error-banner" role="alert">{error}</p>}
+      {heldBack && (
+        <p className="held-back-notice" role="status" data-testid="held-back-notice">{heldBack}</p>
+      )}
       {result && (
         <div className="upload-result">
           <div role="status" aria-live="polite">

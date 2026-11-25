@@ -18,6 +18,7 @@ from psychtool.gateway.orchestrator import (
     HumanApproval,
     SyntheticApproval,
 )
+from psychtool.core.protected import ProtectedContentError
 from psychtool.core.workspace import (
     get_known_names,
     import_material,
@@ -116,10 +117,23 @@ def import_material_cmd(
 ):
     """Import a text material into the workspace (versioned)."""
     text = Path(file).read_text(encoding="utf-8")
-    mat = import_material(
-        Path(path), material_id=material_id, title=title, provider=provider, date=date, text=text
-    )
+    blocked: list[int] = []
+    try:
+        mat = import_material(
+            Path(path), material_id=material_id, title=title, provider=provider,
+            date=date, text=text, blocked_out=blocked,
+        )
+    except ProtectedContentError as exc:
+        # Fixed message only; never quote the file name or its text (ADR 0013).
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"imported {material_id} v{mat.version}")
+    if blocked and blocked[0]:
+        count = blocked[0]
+        typer.echo(
+            f"held back {count} paragraph(s): they appear to contain test "
+            "items, norms or scoring rules; not stored, never sent"
+        )
 
 
 @app.command("import-json")

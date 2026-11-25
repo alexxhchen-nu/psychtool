@@ -44,7 +44,7 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Mirrors the material-id rule used by the ingest path.
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 _SCHEMA_STATEMENTS = (
     """
@@ -154,6 +154,7 @@ _SCHEMA_STATEMENTS = (
     """,
     # Audit log (ADR 0011): append-only, hash-chained, structurally unable to
     # hold free text. The triggers below block UPDATE/DELETE on the app path.
+    # item_count (schema v4, ADR 0013) is an integer-only optional count.
     """
     CREATE TABLE IF NOT EXISTS audit_log (
         seq          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,7 +166,8 @@ _SCHEMA_STATEMENTS = (
         content_hash TEXT,
         destination  TEXT,
         prev_hash    TEXT NOT NULL,
-        entry_hash   TEXT NOT NULL
+        entry_hash   TEXT NOT NULL,
+        item_count   INTEGER CHECK (item_count IS NULL OR item_count >= 0)
     )
     """,
     """
@@ -268,6 +270,14 @@ _MIGRATION_STATEMENTS = {
     # one-way set-once write in the same transaction as its audit row.
     3: (
         "ALTER TABLE cases ADD COLUMN synthetic_confirmed_at TEXT",
+    ),
+    # Schema v3 -> v4 (ADR 0013): the audit log gains an optional integer
+    # item_count (used by material.protected_blocked). Existing rows keep
+    # NULL, and the chain hash covers item_count only when it is not NULL, so
+    # pre-v4 rows verify exactly as before.
+    4: (
+        "ALTER TABLE audit_log ADD COLUMN item_count INTEGER"
+        " CHECK (item_count IS NULL OR item_count >= 0)",
     ),
 }
 
@@ -426,6 +436,7 @@ class SqliteStore:
         object_id: str,
         content_hash: str | None = None,
         destination: str | None = None,
+        item_count: int | None = None,
     ) -> None:
         """Append one chained audit row (joins an open transaction)."""
         _audit.append_audit(
@@ -436,6 +447,7 @@ class SqliteStore:
             object_id=object_id,
             content_hash=content_hash,
             destination=destination,
+            item_count=item_count,
         )
 
     def verify_audit_chain(self) -> tuple[bool, int, int | None]:
@@ -454,7 +466,15 @@ class SqliteStore:
 
         All or nothing: any failure rolls every inserted row back. Refuses to
         import over an existing case id. Returns the imported case id.
+
+        R13 (ADR 0013): passages matching the protected-content screen are
+        dropped before any row is written; a material whose passages are all
+        blocked is not imported at all, and one
+        ``material.protected_blocked`` audit row per affected material is
+        written inside the same transaction (count + hash only). The CLI's
+        own JSON storage is not changed by this screen.
         """
+        from psychtool.core.protected import find_protected
         from psychtool.store.importer import read_json_workspace
 
         bundle = read_json_workspace(Path(workspace))
@@ -462,6 +482,62 @@ class SqliteStore:
         validate_case_id(case_id)
         if self.case_exists(case_id):
             raise CaseExistsError(f"case already exists: {case_id}")
+        # Screen everything before the transaction opens: a checker failure
+        # aborts the import with nothing written (fail-closed).
+        screened: list[tuple[Material, list[Passage], int, str | None]] = []
+        # Passage ids that were blocked per material id — claims citing any of
+        # them are rejected below (their source would no longer exist).
+        blocked_passage_ids: dict[str, set[str]] = {}
+        for material in bundle["materials"]:
+            try:
+                blocked_indexes = find_protected(
+                    [passage.text for passage in material.passages]
+                )
+            except Exception:
+                raise ValueError(
+                    "protected-content check failed; import rejected"
+                ) from None
+            if not blocked_indexes:
+                screened.append((material, list(material.passages), 0, None))
+                continue
+            blocked = set(blocked_indexes)
+            blocked_passage_ids[material.id] = {
+                material.passages[i].id for i in blocked_indexes
+            }
+            # Keep ORIGINAL passage ids: claims cite passages by id, so
+            # renumbering would silently re-point claims at other passages.
+            # Only the stored ``position`` stays sequential.
+            kept = [
+                passage
+                for i, passage in enumerate(material.passages)
+                if i not in blocked
+            ]
+            blocked_hash = hashlib.sha256(
+                "\n\n".join(material.passages[i].text for i in blocked_indexes).encode("utf-8")
+            ).hexdigest()
+            screened.append((material, kept, len(blocked_indexes), blocked_hash))
+        # Claims fail closed: a claim whose own text trips the screen, or that
+        # cites a blocked passage, rejects the whole import — nothing written.
+        from psychtool.core.protected import is_protected
+
+        try:
+            for claim in bundle["claims"]:
+                if is_protected(claim.text):
+                    raise ValueError(
+                        "protected content in workspace claims; import rejected"
+                    )
+                if claim.source_passage_id in blocked_passage_ids.get(
+                    claim.source_document_id, set()
+                ):
+                    raise ValueError(
+                        "protected content in workspace claims; import rejected"
+                    )
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError(
+                "protected-content check failed; import rejected"
+            ) from None
         with self.transaction() as connection:
             connection.execute(
                 "INSERT INTO cases (case_id, data_tier, created_at) VALUES (?, ?, ?)",
@@ -478,7 +554,20 @@ class SqliteStore:
                 object_type="case",
                 object_id=case_id,
             )
-            for material in bundle["materials"]:
+            for material, passages, blocked_count, blocked_hash in screened:
+                if not passages:
+                    # Every passage was blocked: no material row at all, only
+                    # the block audit row (count + hash, never text).
+                    if blocked_count:
+                        self.append_audit(
+                            case_id=case_id,
+                            action="material.protected_blocked",
+                            object_type="material",
+                            object_id=material.id,
+                            content_hash=blocked_hash,
+                            item_count=blocked_count,
+                        )
+                    continue
                 connection.execute(
                     "INSERT INTO materials (case_id, material_id, version, title, provider, date)"
                     " VALUES (?, ?, ?, ?, ?, ?)",
@@ -491,7 +580,7 @@ class SqliteStore:
                         material.date,
                     ),
                 )
-                for position, passage in enumerate(material.passages, start=1):
+                for position, passage in enumerate(passages, start=1):
                     connection.execute(
                         "INSERT INTO passages"
                         " (case_id, material_id, version, passage_id, position, text)"
@@ -504,6 +593,15 @@ class SqliteStore:
                             position,
                             passage.text,
                         ),
+                    )
+                if blocked_count:
+                    self.append_audit(
+                        case_id=case_id,
+                        action="material.protected_blocked",
+                        object_type="material",
+                        object_id=material.id,
+                        content_hash=blocked_hash,
+                        item_count=blocked_count,
                     )
             for claim in bundle["claims"]:
                 connection.execute(
@@ -622,6 +720,7 @@ class CaseStore:
         object_id: str,
         content_hash: str | None = None,
         destination: str | None = None,
+        item_count: int | None = None,
     ) -> None:
         """Append one audit row through the underlying store connection."""
         self._store.append_audit(
@@ -631,6 +730,7 @@ class CaseStore:
             object_id=object_id,
             content_hash=content_hash,
             destination=destination,
+            item_count=item_count,
         )
 
     # -- materials ------------------------------------------------------
@@ -731,8 +831,16 @@ class CaseStore:
         provider: str,
         date: str,
         passages: list[Passage],
+        blocked_count: int = 0,
+        blocked_hash: str | None = None,
     ) -> Material:
-        """Append the next immutable version of a material (one transaction)."""
+        """Append the next immutable version of a material (one transaction).
+
+        When the R13 screen (ADR 0013) dropped protected passages before this
+        call, ``blocked_count``/``blocked_hash`` describe them and a
+        ``material.protected_blocked`` row is written in the *same*
+        transaction as the material import (ADR 0011 rule).
+        """
         if not MATERIAL_ID_RE.fullmatch(material_id):
             raise ValueError("material id must be a short anonymous slug")
         material = Material(
@@ -781,6 +889,17 @@ class CaseStore:
                     "\n\n".join(p.text for p in passages).encode("utf-8")
                 ).hexdigest(),
             )
+            if blocked_count:
+                # R13 (ADR 0013): the block row rides the same transaction as
+                # the import it qualifies; count + hash only, never text.
+                self.append_audit(
+                    case_id=self._case_id,
+                    action="material.protected_blocked",
+                    object_type="material",
+                    object_id=material_id,
+                    content_hash=blocked_hash,
+                    item_count=blocked_count,
+                )
         return material
 
     # -- known names ------------------------------------------------------
