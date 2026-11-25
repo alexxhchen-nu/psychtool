@@ -35,10 +35,21 @@ function formatFailures(rows: ContrastRow[]): string {
 test('contrast check has 0 failures on the three-column workspace', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openSyntheticWorkspace(page)
+  // Close the paste panel left open by setup so the audit is of the
+  // three-column workspace, not an off-layout upload-result control.
+  const pasteToggle = page.getByRole('button', { name: 'Paste synthetic text' })
+  if (await pasteToggle.getAttribute('aria-expanded') === 'true') {
+    await pasteToggle.click()
+  }
   await page.getByRole('button', { name: 'Evidence' }).click()
   const item = page.getByTestId('evidence-item').first()
   if (await item.count()) await item.click()
   await page.evaluate(() => document.fonts?.ready)
+  await page.mouse.move(0, 0)
+  await page.evaluate(() => {
+    const active = document.activeElement
+    if (active && active instanceof HTMLElement) active.blur()
+  })
 
   const measured = [
     ...(await contrast.audit(page, 'spa')),
