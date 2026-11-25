@@ -26,7 +26,12 @@ from pydantic import BaseModel
 from psychtool.core.claims import list_claims
 from psychtool.core.draft import build_prompt, select_claims
 from psychtool.core.egress import SourceRef
-from psychtool.core.report_templates import ReportTemplate, load_template
+from psychtool.core.report_templates import (
+    ReportTemplate,
+    TemplateSection,
+    is_clinician_authored_section,
+    load_template,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from psychtool.store.sqlite_store import CaseStore
@@ -38,6 +43,18 @@ SECTIONS_DIR = "sections"
 
 # A JSON workspace directory, or one case bound inside the SQLite store.
 SectionTarget = Union[Path, str, "CaseStore"]
+
+
+class ClinicianAuthoredSectionError(ValueError):
+    """Raised when egress is requested for a section the clinician writes.
+
+    The API turns this into a fixed 400 body; no section text, claim ids or
+    this message is ever returned to the client or logged.
+    """
+
+    def __init__(self, section_id: str) -> None:
+        self.section_id = section_id
+        super().__init__("clinician-authored sections are not sent to the model")
 
 
 class SectionDraft(BaseModel):
@@ -73,11 +90,15 @@ def _latest_version(dirpath: Path, section_id: str) -> int:
     return max(versions, default=0)
 
 
-def _template_gate(template: ReportTemplate, section_id: str) -> ReviewGate:
+def _template_section(template: ReportTemplate, section_id: str) -> TemplateSection:
     for section in template.sections:
         if section.id == section_id:
-            return section.review_gate
+            return section
     raise KeyError(f"section {section_id!r} not in template {template.template_id!r}")
+
+
+def _template_gate(template: ReportTemplate, section_id: str) -> ReviewGate:
+    return _template_section(template, section_id).review_gate
 
 
 def _is_case_store(target: object) -> bool:
@@ -222,7 +243,12 @@ def build_section_request_input(
         raise ValueError(
             f"template {template_id} is at version {template.version}, not {template_version}"
         )
-    _template_gate(template, section_id)
+    section = _template_section(template, section_id)
+    if is_clinician_authored_section(section):
+        # Fail closed before selecting claims or building any prompt: these
+        # sections may be blank or carry only her selected evidence prompts,
+        # never a model-generated conclusion (R9-AC3).
+        raise ClinicianAuthoredSectionError(section_id)
     claims = select_claims(target, claim_ids)
     prompt = build_prompt(claims, instructions=instructions)
     source_refs = [

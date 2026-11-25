@@ -17,6 +17,11 @@ from pydantic import BaseModel, Field, model_validator
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
 
+# R9-AC3: these content types name sections only the clinician may write. The
+# template's clinician review gate is about approval, not authorship, so it is
+# deliberately not used to widen this set.
+CLINICIAN_AUTHORED_CONTENT_TYPES = frozenset({"diagnostic_conclusion", "recommendation"})
+
 
 class TemplateField(BaseModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
@@ -64,6 +69,20 @@ class ReportTemplate(BaseModel):
         if len(section_ids) != len(set(section_ids)):
             raise ValueError("template section ids must be unique")
         return self
+
+
+def is_clinician_authored_section(section: TemplateSection) -> bool:
+    """True when a section is written by the clinician, never by the model.
+
+    A section qualifies when its content types include a diagnostic
+    conclusion or a recommendation (R9-AC3). Findings, summary and other
+    licensed-clinician-gated sections do not qualify merely because of the
+    review gate.
+    """
+    return any(
+        content_type in CLINICIAN_AUTHORED_CONTENT_TYPES
+        for content_type in section.content_types
+    )
 
 
 def load_template(template_id: str, *, templates_dir: Path = TEMPLATES_DIR) -> ReportTemplate:

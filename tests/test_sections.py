@@ -5,7 +5,12 @@ import pytest
 import psychtool.core.sections as sections_module
 from psychtool.core.workspace import init_workspace
 from psychtool.core.claims import add_claim
+from psychtool.core.report_templates import (
+    is_clinician_authored_section,
+    load_template,
+)
 from psychtool.core.sections import (
+    ClinicianAuthoredSectionError,
     build_section_request_input,
     get_section,
     save_section,
@@ -183,6 +188,31 @@ def test_build_section_request_input_validates_template_and_section(ws):
             section_id="not-a-section",
             claim_ids=[],
             instructions="x",
+        )
+
+
+def test_clinician_authored_helper_matches_content_types_only():
+    template = load_template("intake-report")
+    sections = {section.id: section for section in template.sections}
+
+    assert is_clinician_authored_section(sections["clinical_impressions"])
+    assert is_clinician_authored_section(sections["recommendations"])
+    for section_id in ("history", "findings", "summary"):
+        assert not is_clinician_authored_section(sections[section_id])
+
+
+@pytest.mark.parametrize("section_id", ["clinical_impressions", "recommendations"])
+def test_build_section_request_input_refuses_clinician_authored_sections(ws, section_id):
+    _add_claim(ws, "c1")
+
+    with pytest.raises(ClinicianAuthoredSectionError):
+        build_section_request_input(
+            ws,
+            template_id="intake-report",
+            template_version=1,
+            section_id=section_id,
+            claim_ids=["c1"],
+            instructions="Write a diagnosis.",
         )
 
 

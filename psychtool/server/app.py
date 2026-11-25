@@ -64,6 +64,7 @@ from psychtool.core.categorize import (
 )
 from psychtool.core.report_templates import list_templates, load_template, manifest_as_dict
 from psychtool.core.sections import (
+    ClinicianAuthoredSectionError,
     SectionStatus,
     build_section_request_input,
     save_section,
@@ -705,6 +706,16 @@ def create_app(session_token: str | None = None) -> FastAPI:
                 config=load_config(),
                 source_refs=source_refs,
             )
+        except ClinicianAuthoredSectionError:
+            # R9-AC3: diagnosis / impression / recommendation sections are
+            # never sent to the model. Fixed body; nothing derived from the
+            # request is echoed back.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "this section is written by the clinician and is not sent to the model"
+                ),
+            ) from None
         except EgressProtectedContentError as exc:
             # R13 (ADR 0013): material-derived text tripped the protected
             # screen at prepare time; refuse with a fixed reason body.

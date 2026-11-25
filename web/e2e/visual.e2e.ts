@@ -7,12 +7,12 @@ import { openSyntheticWorkspace } from './workspace-helpers'
 
 // PT-10 visual regression at 1440×900, 1280×800 and 1024×768 against the
 // GitBook prototype. Demo-case copy will not match, so the pass/fail number
-// is the *masked* chrome/layout/theme ratio. Working bar: 5%.
+// is the *masked* chrome/layout/theme ratio. Agreed threshold: 2%.
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PROTO = pathToFileURL(resolve(HERE, 'prototype/cur.html')).href
 const OUT = resolve(HERE, 'baselines')
-const THRESHOLD = 0.05
+const THRESHOLD = 0.02
 
 const VIEWPORTS = [
   { name: '1440', width: 1440, height: 900 },
@@ -102,7 +102,7 @@ async function diffRatio(
   )
 }
 
-test('screenshot diff vs the prototype is under 5% per viewport (masked chrome/layout/theme)', async ({ page, browser }) => {
+test('screenshot diff vs the prototype is under 2% per viewport (masked chrome/layout/theme)', async ({ page, browser }) => {
   mkdirSync(OUT, { recursive: true })
   const results: { name: string; raw: number; masked: number }[] = []
 
@@ -151,7 +151,7 @@ test('screenshot diff vs the prototype is under 5% per viewport (masked chrome/l
   for (const result of results) {
     expect(
       result.masked,
-      `viewport ${result.name}: masked ${(result.masked * 100).toFixed(2)}% exceeds the 5% working bar (raw ${(result.raw * 100).toFixed(2)}%)`,
+      `viewport ${result.name}: masked ${(result.masked * 100).toFixed(2)}% exceeds the 2% threshold (raw ${(result.raw * 100).toFixed(2)}%)`,
     ).toBeLessThanOrEqual(THRESHOLD)
   }
 })
