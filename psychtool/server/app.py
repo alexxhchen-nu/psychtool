@@ -55,6 +55,7 @@ from psychtool.core.egress import (
     get_egress_request,
     prepare_egress_request,
 )
+from psychtool.core.extract import EvidenceResult, RuleExtractor, extract_evidence
 from psychtool.core.report_templates import list_templates, load_template, manifest_as_dict
 from psychtool.core.sections import (
     SectionStatus,
@@ -405,6 +406,39 @@ def create_app(session_token: str | None = None) -> FastAPI:
     @app.get("/api/workspaces/{case_id}/claims")
     def claims(case_id: str) -> list[dict]:
         return [c.model_dump() for c in _case(case_id).list_claims()]
+
+    @app.get("/api/workspaces/{case_id}/evidence")
+    def evidence(case_id: str) -> dict:
+        """R4 (ADR 0014): verbatim evidence sentences for her review.
+
+        Computed on the fly from the LATEST version of each material of this
+        case only; nothing is stored and no claims, sections, egress rows or
+        audit rows are written. Each item carries its quote plus the
+        material id/title/version, paragraph and code-point character range
+        so the UI can scroll to and highlight the exact source text.
+        """
+        case = _case(case_id)
+        materials = case.list_materials()
+        result: EvidenceResult = extract_evidence(RuleExtractor(), materials)
+        titles = {material.id: material.title for material in materials}
+        return {
+            "extractor": RuleExtractor().name,
+            "items": [
+                {
+                    "id": item.id,
+                    "quote": item.quote,
+                    "material_id": item.span.material_id,
+                    "material_title": titles.get(item.span.material_id, ""),
+                    "material_version": item.span.material_version,
+                    "passage_id": item.span.passage_id,
+                    "paragraph": item.paragraph,
+                    "start": item.span.start,
+                    "end": item.span.end,
+                }
+                for item in result.items
+            ],
+            "dropped": result.dropped,
+        }
 
     @app.get("/api/workspaces/{case_id}/materials/{material_id}/suggestions")
     def claim_suggestions(case_id: str, material_id: str, provider_role: str) -> list[dict]:

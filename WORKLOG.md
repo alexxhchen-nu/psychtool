@@ -336,3 +336,34 @@
   - `=1` → a startup warning, and the Traceback and the marker are logged.
   - `=yes` → off.
   - `=1` with `PSYCHTOOL_DATA_TIER=real` → refuses to start, exit 2, no DB file created.
+
+## 2026-11-24 17:19 CST — PT-05 review answers from Alex, and PT-06 supervisor verification (GROK-36)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with two follow-up rounds after the step limit was hit. The deepseek-flash fallback was not triggered. The sandbox worktree had no synced `.venv` and no `node_modules`, so the supervisor ran `uv sync --extra dev` and `bun install --frozen-lockfile` there (offline cache).
+
+### Alex's answers to the PT-05 questions (2026-11-24)
+
+1. **Traceback switch with real data:** keep the server-wide refusal (`PSYCHTOOL_DATA_TIER=real` + `PSYCHTOOL_DEBUG_TRACEBACKS=1` → exit 2). Later, the switch is to be forced off whenever **any** real data exists, not decided per case.
+2. **Fixture wording** (…或常模资料 → …或标准化比较资料): OK.
+3. **Whole-prompt R13 check on the JSON/CLI egress path:** OK.
+4. **HTTP codes:** 400 `protected_content` and 503 `protected_check_failed` are OK.
+5. **Added scope, done in PT-06:** NFKC normalization before R13 matching, everywhere the check runs; stored text stays original. No spaced-letter detection, and over-blocking such as "no norm data provided" is accepted.
+
+### Supervisor review changes
+
+- **Sentence splitting:** the ported prototype regex cut sentences at "a.m." ("until about 1 a" / "before falling asleep"). A "." now ends a sentence only when it is followed by whitespace and doesn't come after a known abbreviation (a.m., p.m., Dr., Mr., e.g., …). Decimals like "7.5" stay inside the sentence.
+- **Minimum length:** the prototype's 6-character minimum dropped short Chinese sentences (e.g. "他周末会补觉"). Quotes that contain CJK now need 4 characters.
+- **Performance (found in review):** evidence extraction was quadratic. 8,000 paragraphs took 1.5 s, and about 100k paragraphs (9 MB, under the upload limit) didn't finish in 2 minutes. There is now a per-material passage index, and the abbreviation check no longer copies the text before each dot. A perf guard test was added. Live: an 8.7 MB upload gives `/evidence` 190,000 items in 3.4 s.
+- **Scroll e2e (added by the supervisor):** the R4-AC2 test now uses a 41-paragraph material, so the highlight is only in view if the panel scrolled. It was confirmed failing with `scrollIntoView` removed and passing with it.
+
+### Verification (fresh clone)
+
+- `uv run --extra dev pytest -q` → **583 passed**; `bun test` → **129 pass / 0 fail**; `bun run build` → ok; `bun run e2e` → **7 passed** (new: 2 evidence tests covering R4-AC1/AC2/AC3).
+- Mutation checks:
+  - NFKC removed → 5 R13 tests fail.
+  - Span check bypassed → the dropped-candidate test fails.
+- Live `psychtool-server` (synthetic):
+  - "Ｎｏｒｍ ｔａｂｌｅ: raw 12 = T 55." was held back.
+  - The kept full-width paragraph ("ＡＢＣ school note, normal day. 他周末会补觉。") is stored as uploaded, not normalized.
+  - `GET /evidence` → 7 items, each with quote == passage[start:end]; this includes "Dr. Lee…", "7.5 hours", the "1 a.m." sentence, a CJK sentence and a sentence after an emoji (code-point offsets).
+  - Case B's text is not in case A's evidence; row counts are unchanged after the GET; an unknown case → 404; no material text in the log.

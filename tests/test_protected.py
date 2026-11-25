@@ -73,3 +73,33 @@ def test_find_protected_returns_indexes():
     ]
     assert find_protected(passages) == [1, 3]
     assert find_protected([]) == []
+
+
+# -- NFKC (PT-06): compatibility full-width forms still trip the screen ------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ｎｏｒｍ ｔａｂｌｅ: raw 12",
+        "ｎｏｒｍｓ",
+        "ＳＣＯＲＩＮＧ ＫＥＹ",
+        "norm\u3000table",  # ideographic space between the words
+        "Ｔｅｓｔ ｉｔｅｍｓ",
+    ],
+)
+def test_nfkc_full_width_forms_are_blocked(text):
+    assert is_protected(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "normal",
+        "ｎｏｒｍａｌ",  # full-width spelling of a non-match stays non-match
+        "常规",
+        "Ａｂｎｏｒｍａｌ",
+    ],
+)
+def test_nfkc_non_matches_stay_unblocked(text):
+    assert is_protected(text) is False

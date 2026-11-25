@@ -184,6 +184,30 @@ def test_r13_ac1_all_blocked_upload_is_rejected(client, db_path):
     assert counts["audit_log"] == before["audit_log"] + 1
 
 
+def test_r13_ac1_nfkc_full_width_norm_table_held_back(client, db_path):
+    """PT-06: a full-width "Ｎｏｒｍ ｔａｂｌｅ" paragraph is held back
+    (NFKC applies to matching only), while a kept paragraph containing
+    full-width letters is stored byte-for-byte unchanged."""
+    kept_full_width = "ＡＢＣ school note, normal day."
+    response = _upload(
+        client,
+        data=f"{kept_full_width}\n\nＮｏｒｍ ｔａｂｌｅ: raw 12\n".encode(),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["blocked_paragraphs"] == 1
+    material = payload["material"]
+    assert len(material["passages"]) == 1
+    # Stored text is the original, not the normalized copy.
+    assert material["passages"][0]["text"] == kept_full_width
+    raw = sqlite3.connect(db_path)
+    stored = raw.execute(
+        "SELECT text FROM passages WHERE material_id = 'doc-1'"
+    ).fetchall()
+    raw.close()
+    assert [row[0] for row in stored] == [kept_full_width]
+
+
 # -- R13-AC2: checker failure rejects the whole upload, nothing written -------
 
 

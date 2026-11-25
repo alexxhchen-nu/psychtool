@@ -3,7 +3,9 @@
 Keyword list ported verbatim from the prototype. English terms use word
 boundaries (so "normal", "normally", "abnormal" and "enormous" never match);
 Chinese terms match as plain substrings because Chinese has no word
-boundaries. Matching is case-insensitive.
+boundaries. Matching is case-insensitive. Before matching, one NFKC-normalized
+copy of the text is used (compatibility full-width letters/digits and
+ideographic spaces match their ASCII forms); stored text stays untouched.
 
 Fail-closed contract (R13-AC2): callers must treat *any* exception from this
 module as "the whole upload is suspect" and reject it — never fall back to
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -73,9 +76,19 @@ class ProtectedContentError(ValueError):
         super().__init__(message)
 
 
+def _normalize_for_matching(text: str) -> str:
+    """NFKC-normalize a copy of the text for matching only (PT-06).
+
+    Full-width letters/digits and compatibility ideographic spaces become
+    their ASCII counterparts so a pasted full-width "Ｎｏｒｍ ｔａｂｌｅ"
+    still trips the screen. The stored text is never touched.
+    """
+    return unicodedata.normalize("NFKC", text)
+
+
 def is_protected(text: str) -> bool:
     """True when one passage's text matches the protected-content screen."""
-    return _PROTECTED_RE.search(text) is not None
+    return _PROTECTED_RE.search(_normalize_for_matching(text)) is not None
 
 
 def find_protected(passages: list[str]) -> list[int]:
