@@ -11,6 +11,7 @@ import {
   roleLabel,
   setByText,
 } from '../evidence'
+import { dimensionChipLabel } from '../dimensions'
 import type { EvidenceItem, EvidenceResponse, Material } from '../types'
 
 const HEADER_TEXT =
@@ -147,6 +148,12 @@ export default function EvidencePanel({ workspaceId, materials, busy }: Evidence
                     data-testid="role-chip"
                   >
                     From: {item.role_label || roleLabel(item.role)}
+                  </span>
+                  <span
+                    className="evidence-chip dimension-chip"
+                    data-testid="dimension-chip"
+                  >
+                    Dimension: {dimensionChipLabel(item)}
                   </span>
                 </span>
                 <span className="evidence-reason" data-testid="category-reason">

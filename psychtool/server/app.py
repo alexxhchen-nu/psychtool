@@ -88,6 +88,7 @@ from psychtool.store.sqlite_store import (
     CLINICIAN_ROLE_REASON,
     CaseExistsError,
     CaseStore,
+    DimensionListExistsError,
     SqliteStore,
     UnknownCaseError,
     default_db_path,
@@ -149,6 +150,8 @@ class PasteMaterialPayload(BaseModel):
     date: str
     text: str
     synthetic_confirmed: bool = False
+    # ADR 0016: 'case' (default) or 'dims' (her uploaded dimension list).
+    kind: str = "case"
 
 
 class EvidenceChoicePayload(BaseModel):
@@ -156,6 +159,15 @@ class EvidenceChoicePayload(BaseModel):
 
     category: str | None = None
     role: str | None = None
+
+
+class DimensionChoicePayload(BaseModel):
+    """R7-AC4: exactly one of action (confirm/none/reset) or dimension_id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str | None = None
+    dimension_id: str | None = None
 
 
 def _evidence_labels() -> tuple[dict[str, str], dict[str, str]]:
@@ -354,7 +366,8 @@ def create_app(session_token: str | None = None) -> FastAPI:
     @app.post("/api/workspaces/{case_id}/materials")
     async def upload_material(case_id: str, file: UploadFile = File(...),
                               material_id: str = Form(...), title: str = Form(...),
-                              provider: str = Form(...), date: str = Form(...)) -> dict:
+                              provider: str = Form(...), date: str = Form(...),
+                              kind: str = Form("case")) -> dict:
         case = _case(case_id)
         # R2-AC3: no upload before the per-case synthetic confirmation.
         if not case.is_synthetic_confirmed():
@@ -366,6 +379,8 @@ def create_app(session_token: str | None = None) -> FastAPI:
                     "reason": "confirmation_required",
                 },
             )
+        if kind not in ("case", "dims"):
+            raise HTTPException(status_code=400, detail="invalid material kind")
         # Everything is validated before the store is touched; the store
         # write itself (material + passages + audit row) is one transaction,
         # so a rejection can never leave a partial write behind.
@@ -382,7 +397,10 @@ def create_app(session_token: str | None = None) -> FastAPI:
             material, findings, blocked_count = import_upload(
                 case, filename=file.filename or "", data=data,
                 material_id=material_id, title=title, provider=provider, date=date,
+                kind=kind,
             )
+        except DimensionListExistsError as exc:
+            raise HTTPException(status_code=409, detail="dimension list exists") from exc
         except ProtectedContentError as exc:
             # R13 (ADR 0013): fixed {detail, reason} bodies; 503 for a checker
             # failure (the service is degraded), 400 when content is blocked.
@@ -414,13 +432,17 @@ def create_app(session_token: str | None = None) -> FastAPI:
                 status_code=400,
                 detail="pasted text must be confirmed as synthetic",
             )
+        if body.kind not in ("case", "dims"):
+            raise HTTPException(status_code=400, detail="invalid material kind")
         try:
             data = body.text.encode("utf-8")
             material, findings, blocked_count = import_upload(
                 case, filename="pasted-synthetic-text.txt", data=data,
                 material_id=body.material_id, title=body.title,
-                provider=body.provider, date=body.date,
+                provider=body.provider, date=body.date, kind=body.kind,
             )
+        except DimensionListExistsError as exc:
+            raise HTTPException(status_code=409, detail="dimension list exists") from exc
         except ProtectedContentError as exc:
             # R13 (ADR 0013): fixed {detail, reason} bodies, as for uploads.
             status = 503 if exc.reason == PROTECTED_CHECK_FAILED_REASON else 400
@@ -545,6 +567,55 @@ def create_app(session_token: str | None = None) -> FastAPI:
             "role_set_by": role_set_by,
             "suggested_role": row["suggested_role"],
             "suggested_role_reason": row["role_reason"],
+        }
+
+    @app.get("/api/workspaces/{case_id}/dimensions")
+    def dimensions(case_id: str) -> dict:
+        """R7 (ADR 0016): HER dimension list and the evidence mapping view.
+
+        Read-only: no rows are written and no audit entry is appended. Every
+        name comes from her uploaded dims material only; the fixed
+        not-diagnosis disclaimer is always present.
+        """
+        case = _case(case_id)
+        return case.list_dimensions()
+
+    @app.put("/api/workspaces/{case_id}/evidence/{evidence_id}/dimension")
+    def put_evidence_dimension(
+        case_id: str, evidence_id: str, body: DimensionChoicePayload
+    ) -> dict:
+        """Record her dimension choice for one evidence item (R7-AC4).
+
+        One step, one transaction, one ``evidence.set_dimension`` audit row
+        (allowlisted value only — never her text). Invalidating citing
+        sentences/sections is PT-09 and does not happen here.
+        """
+        if (body.action is None) == (body.dimension_id is None):
+            raise HTTPException(status_code=400, detail="invalid dimension choice")
+        if body.action is not None and body.action not in ("confirm", "none", "reset"):
+            raise HTTPException(status_code=400, detail="invalid dimension choice")
+        case = _case(case_id)
+        try:
+            case.set_evidence_dimension(
+                evidence_id,
+                action=body.action,
+                dimension_id=body.dimension_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="evidence not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid dimension choice") from exc
+        item = next(
+            (entry for entry in case.list_evidence() if entry["id"] == evidence_id),
+            None,
+        )
+        return {
+            "id": evidence_id,
+            "dimension_id": item["dimension_id"] if item else None,
+            "dimension_name": item["dimension_name"] if item else None,
+            "dim_state": item["dim_state"] if item else None,
+            "dim_reason": item["dim_reason"] if item else None,
+            "dim_set_by": item["dim_set_by"] if item else None,
         }
 
     @app.get("/api/workspaces/{case_id}/materials/{material_id}/suggestions")

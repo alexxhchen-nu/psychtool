@@ -406,3 +406,19 @@
   - `test_import_survives_failed_auto_extraction`: a failed auto-extraction keeps the material; the log holds only the exception type; a later refresh recovers.
   - `test_refresh_route_reports_dropped`: a forged non-verbatim candidate is counted as dropped and not stored.
   - Each test was confirmed red under its mutation (try/except removed; `dropped` forced to 0).
+
+## 2026-11-24 23:20 CST — PT-08 dimension mapping (GROK-38 / R7)
+
+**Executor:** Grok Workhorse supervisor. The worker was kimi-for-coding (profile `default`), in one task with four follow-up rounds. The deepseek-flash fallback was not triggered. The supervisor provisioned `.venv`/`node_modules` in the sandbox worktree, ran Playwright outside it, and made small direct fixes (v4 fixture INSERT, genuine v5→v6 migration test, e2e case re-select after reload, per-line split for dims lists so "Source: your list, paragraph n" points at the list line).
+
+### Alex's PT-07 answers folded in
+
+3. **Audit rows record the value she picked:** allowlisted values only, never her text. Schema v6 adds `audit_log.value`. `evidence.categorize` stores a CATEGORY_KEYS key or `reset`; `evidence.set_role` stores a ROLE_KEYS key or `reset`; `evidence.set_dimension` stores `confirm` | `none` | `reset` | a `dim_[0-9a-f]{24}` id (the id, never the name). Anything else is rejected at the audit layer. Covered by `tests/test_dimensions_store.py`. Pagination still waits for PT-10. Sentence evidence as the only source remains GROK-51, not started.
+
+### Scope delivered
+
+- Dimension list upload (`kind=dims`), one list per case, comparison suggestions, the four hard rules from tech-design §4, and Needs review actions (Confirm / Change to… / Wrong, no dimension).
+- Dimensions page matches the prototype (copy, grouping, chips, source highlights). Screenshot: supervisor compared `web/test-results/dimensions-page.png` to `cur.html` `pDims`/`dimRow`/`dimChip`.
+- All nine R7 ACs have API tests (`test_r7_acN_*`) and e2e titles containing `R7-ACN` (AC7 is the API guard; AC1–AC6 plus Wrong-no-dimension are in Playwright).
+- ADR 0016. R6 invalidation is PT-09; citecheck/draft filtering is PT-12.
+

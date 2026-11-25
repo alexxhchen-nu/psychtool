@@ -43,6 +43,8 @@ AuditAction = Literal[
     "evidence.extract",
     "evidence.categorize",
     "evidence.set_role",
+    "evidence.set_dimension",
+    "dimension_list.build",
     "egress.prepare",
     "egress.approve",
     "egress.invalidate",
@@ -63,6 +65,8 @@ AUDIT_ACTIONS: frozenset[str] = frozenset(
         "evidence.extract",
         "evidence.categorize",
         "evidence.set_role",
+        "evidence.set_dimension",
+        "dimension_list.build",
         "egress.prepare",
         "egress.approve",
         "egress.invalidate",
@@ -76,6 +80,24 @@ AUDIT_OBJECT_TYPES: frozenset[str] = frozenset(
     {"case", "material", "claim", "section", "evidence", "egress_request"}
 )
 AUDIT_DESTINATIONS: frozenset[str] = frozenset({"fake", "http"})
+
+# Action-conditional value allowlist (schema v6, ADR 0016 / Alex's PT-07
+# answer 3): audit rows for HER category/role/dimension changes record the
+# allowlisted VALUE she picked — never her text and never a dimension name.
+# ``evidence.set_dimension`` records the dimension id (``dim_[0-9a-f]{24}``),
+# which is a digest of her text, never the text itself.
+_DIMENSION_VALUE_RE = re.compile(r"^dim_[0-9a-f]{24}$")
+
+
+def _build_value_allowlist() -> dict[str, frozenset[str]]:
+    """Late-bound so CATEGORY_KEYS/ROLE_KEYS stay importable here."""
+    from psychtool.core.categorize import CATEGORY_KEYS, ROLE_KEYS
+
+    return {
+        "evidence.categorize": frozenset(CATEGORY_KEYS | {"reset"}),
+        "evidence.set_role": frozenset(ROLE_KEYS | {"reset"}),
+        "evidence.set_dimension": frozenset({"confirm", "none", "reset"}),
+    }
 
 # Same shape as the store's generic id rule, plus the leading ``-``/``_``
 # that token_urlsafe-derived ids (egress request ids) can start with. Still
@@ -110,6 +132,7 @@ class AuditWriter(Protocol):
         content_hash: str | None = None,
         destination: str | None = None,
         item_count: int | None = None,
+        value: str | None = None,
     ) -> None: ...
 
 
@@ -120,13 +143,16 @@ def _utcnow() -> str:
 def compute_entry_hash(row: dict) -> str:
     """SHA-256 over the canonical JSON of all chain fields incl. prev_hash.
 
-    ``item_count`` (schema v4, ADR 0013) joins the canonical JSON only when it
-    is not None, so rows written before v4 hash exactly as before and the
-    chain stays verifiable across the migration.
+    ``item_count`` (schema v4, ADR 0013) and ``value`` (schema v6, ADR 0016)
+    join the canonical JSON only when not None, so rows written before those
+    columns existed hash exactly as before and the chain stays verifiable
+    across the migrations.
     """
     canonical = {field: row.get(field) for field in _CHAIN_FIELDS}
     if row.get("item_count") is not None:
         canonical["item_count"] = row["item_count"]
+    if row.get("value") is not None:
+        canonical["value"] = row["value"]
     encoded = json.dumps(
         canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -141,6 +167,7 @@ def _validate(
     content_hash: str | None,
     destination: str | None,
     item_count: int | None = None,
+    value: str | None = None,
 ) -> None:
     if action not in AUDIT_ACTIONS:
         raise ValueError("audit action is not on the allowlist")
@@ -161,6 +188,19 @@ def _validate(
         or item_count < 0
     ):
         raise ValueError("audit item count must be a non-negative integer")
+    # Her picked value is allowlisted per action; a dimension id
+    # (``dim_`` + 24 hex) is accepted for evidence.set_dimension because it
+    # is a digest, never her text.
+    if value is not None:
+        allowed = _build_value_allowlist().get(action, frozenset())
+        if value in allowed:
+            pass
+        elif action == "evidence.set_dimension" and _DIMENSION_VALUE_RE.fullmatch(
+            value
+        ):
+            pass
+        else:
+            raise ValueError("audit value is not on the allowlist for this action")
 
 
 def _insert(
@@ -173,6 +213,7 @@ def _insert(
     content_hash: str | None,
     destination: str | None,
     item_count: int | None = None,
+    value: str | None = None,
 ) -> None:
     """Append one chained row on an open connection (joins any transaction)."""
     _validate(
@@ -182,6 +223,7 @@ def _insert(
         content_hash=content_hash,
         destination=destination,
         item_count=item_count,
+        value=value,
     )
     row = connection.execute(
         "SELECT entry_hash FROM audit_log ORDER BY seq DESC LIMIT 1"
@@ -197,13 +239,34 @@ def _insert(
         "destination": destination,
         "prev_hash": prev_hash,
         "item_count": item_count,
+        "value": value,
     }
     entry_hash = compute_entry_hash(fields)
+    if value is not None:
+        # Schema v6 column; only present on a v6+ table.
+        connection.execute(
+            "INSERT INTO audit_log"
+            " (case_id, ts, action, object_type, object_id, content_hash,"
+            "  destination, prev_hash, entry_hash, value)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                case_id,
+                fields["ts"],
+                action,
+                object_type,
+                object_id,
+                content_hash,
+                destination,
+                prev_hash,
+                entry_hash,
+                value,
+            ),
+        )
+        return
     if item_count is None:
-        # Omit the column entirely when unset so the INSERT also works on a
-        # pre-v4 table (the v2->v4 migration test appends rows before the
-        # v3->v4 ALTER runs; the column defaults to NULL, same as storing
-        # None explicitly). The chain hash already covers None identically.
+        # Omit unset optional columns entirely so the INSERT also works on a
+        # pre-v4/pre-v6 table (migration tests append rows mid-chain); the
+        # chain hash covers None identically either way.
         connection.execute(
             "INSERT INTO audit_log"
             " (case_id, ts, action, object_type, object_id, content_hash,"
@@ -252,6 +315,7 @@ def append_audit(
     content_hash: str | None = None,
     destination: str | None = None,
     item_count: int | None = None,
+    value: str | None = None,
 ) -> None:
     """Append one audit row; free text cannot pass the structural checks.
 
@@ -275,6 +339,7 @@ def append_audit(
                 content_hash=content_hash,
                 destination=destination,
                 item_count=item_count,
+                value=value,
             )
             return
         target.execute("BEGIN IMMEDIATE")
@@ -288,6 +353,7 @@ def append_audit(
                 content_hash=content_hash,
                 destination=destination,
                 item_count=item_count,
+                value=value,
             )
         except BaseException:
             target.execute("ROLLBACK")
@@ -307,6 +373,7 @@ def append_audit(
                 content_hash=content_hash,
                 destination=destination,
                 item_count=item_count,
+                value=value,
             )
         return
     target.append_audit(
@@ -317,6 +384,7 @@ def append_audit(
         content_hash=content_hash,
         destination=destination,
         item_count=item_count,
+        value=value,
     )
 
 
@@ -330,12 +398,14 @@ def verify_audit_chain(store: "SqliteStore") -> tuple[bool, int, int | None]:
     """
     rows = store._connect().execute(
         "SELECT seq, case_id, ts, action, object_type, object_id, content_hash,"
-        " destination, prev_hash, entry_hash, item_count FROM audit_log ORDER BY seq"
+        " destination, prev_hash, entry_hash, item_count, value"
+        " FROM audit_log ORDER BY seq"
     ).fetchall()
     prev = GENESIS_PREV_HASH
     for row in rows:
         fields = {field: row[field] for field in _CHAIN_FIELDS}
         fields["item_count"] = row["item_count"]
+        fields["value"] = row["value"]
         if (
             row["prev_hash"] != prev
             or compute_entry_hash(fields) != row["entry_hash"]

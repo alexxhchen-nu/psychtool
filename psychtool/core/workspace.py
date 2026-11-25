@@ -35,6 +35,9 @@ class Material(BaseModel):
     provider: str
     date: str
     passages: list[Passage]
+    # ADR 0016: 'case' (clinical source material, the default everywhere) or
+    # 'dims' (her uploaded dimension list — never an evidence source).
+    kind: str = "case"
 
     @field_validator("provider")
     @classmethod
@@ -57,6 +60,17 @@ def _split_passages(text: str) -> list[Passage]:
 def split_passages(text: str) -> list[Passage]:
     """Public alias: split raw text into versioned passage blocks."""
     return _split_passages(text)
+
+
+def split_dimension_lines(text: str) -> list[Passage]:
+    """Split a dimension list into one passage per non-empty line.
+
+    The prototype treats each list line as its own paragraph (so
+    "Source: your list, paragraph n" can point at that line). Case
+    materials still use blank-line blocks via :func:`split_passages`.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return [Passage(id=f"p{i:03d}", text=line) for i, line in enumerate(lines, start=1)]
 
 
 def init_workspace(workspace: Path, *, case_id: str) -> Path:

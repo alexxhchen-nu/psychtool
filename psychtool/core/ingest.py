@@ -32,7 +32,7 @@ from psychtool.core.protected import (
     find_protected,
 )
 from psychtool.core.redact import find_identifiers, redact_text
-from psychtool.core.workspace import Material, Passage, get_known_names, import_material, split_passages
+from psychtool.core.workspace import Material, Passage, get_known_names, import_material, split_dimension_lines, split_passages
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from psychtool.store.sqlite_store import CaseStore
@@ -127,7 +127,8 @@ def _is_case_store(target: object) -> bool:
 
 
 def import_upload(target: UploadTarget, *, filename: str, data: bytes,
-                  material_id: str, title: str, provider: str, date: str) -> tuple[Material, list[dict], int]:
+                  material_id: str, title: str, provider: str, date: str,
+                  kind: str = "case") -> tuple[Material, list[dict], int]:
     """Import one upload, dropping protected passages before any store write.
 
     Returns ``(material, identifier_findings, blocked_count)``. Raises
@@ -135,13 +136,16 @@ def import_upload(target: UploadTarget, *, filename: str, data: bytes,
     (``protected_content``) or the check itself fails
     (``protected_check_failed``); in both cases nothing is written except the
     block audit row for the all-blocked case (ADR 0013).
+
+    ``kind`` is ``'case'`` for clinical source materials and ``'dims'`` for
+    her uploaded dimension list (ADR 0016); the JSON-workspace (CLI) branch
+    only ever receives ``'case'``.
     """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", material_id):
         raise ValueError("material id must be a short anonymous slug")
     text = parse_upload(filename, data)
-    passages, blocked_count, blocked_hash = _filter_protected_passages(
-        split_passages(text)
-    )
+    blocks = split_dimension_lines(text) if kind == "dims" else split_passages(text)
+    passages, blocked_count, blocked_hash = _filter_protected_passages(blocks)
     if _is_case_store(target):
         names = target.get_known_names()
         # Findings are computed over the KEPT passages only: nothing about
@@ -172,7 +176,7 @@ def import_upload(target: UploadTarget, *, filename: str, data: bytes,
         material = target.import_material(
             material_id=material_id, title=safe_title, provider=safe_provider,
             date=safe_date, passages=safe_passages,
-            blocked_count=blocked_count, blocked_hash=blocked_hash,
+            blocked_count=blocked_count, blocked_hash=blocked_hash, kind=kind,
         )
         return material, [{"category": hit["category"], "label": hit["label"]}
                           for hit in findings], blocked_count

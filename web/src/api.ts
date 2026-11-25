@@ -1,4 +1,4 @@
-import type { ApprovalInput, EgressRequest, EvidenceChoiceInput, EvidenceChoiceResult, EvidenceRefreshResult, EvidenceResponse, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
+import type { ApprovalInput, DimensionChoiceInput, DimensionChoiceResult, DimensionsResponse, EgressRequest, EvidenceChoiceInput, EvidenceChoiceResult, EvidenceRefreshResult, EvidenceResponse, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
 
 /** Never expose an error response body: validation/provider errors may contain input. */
 export class ApiError extends Error {
@@ -95,6 +95,19 @@ export function uploadMaterial(workspaceId: string, form: FormData): Promise<Upl
   return uploadRequest(`${workspaceUrl(workspaceId)}/materials`, form)
 }
 
+/**
+ * R7 (ADR 0016): upload with an explicit material kind. `kind` defaults to
+ * 'case' server-side; 'dims' marks her uploaded dimension list.
+ */
+export function uploadMaterialWithKind(
+  workspaceId: string,
+  form: FormData,
+  kind: 'case' | 'dims',
+): Promise<UploadResult> {
+  if (kind !== 'case') form.set('kind', kind)
+  return uploadMaterial(workspaceId, form)
+}
+
 export function createCase(caseId: string): Promise<Workspace> {
   return jsonRequest('/api/workspaces', 'POST', { case_id: caseId })
 }
@@ -147,6 +160,26 @@ export function setEvidenceChoice(
 ): Promise<EvidenceChoiceResult> {
   return jsonRequest(
     `${workspaceUrl(workspaceId)}/evidence/${encodeURIComponent(evidenceId)}`,
+    'PUT',
+    choice,
+  )
+}
+
+// -- R7 (PT-08 / ADR 0016): dimension mapping --------------------------------
+
+/** Read-only view of her dimension list and the evidence mapping. */
+export function getDimensions(workspaceId: string): Promise<DimensionsResponse> {
+  return apiRequest(`${workspaceUrl(workspaceId)}/dimensions`)
+}
+
+/** R7-AC4: confirm / change to a dimension / wrong-no-dimension / reset. */
+export function setEvidenceDimension(
+  workspaceId: string,
+  evidenceId: string,
+  choice: DimensionChoiceInput,
+): Promise<DimensionChoiceResult> {
+  return jsonRequest(
+    `${workspaceUrl(workspaceId)}/evidence/${encodeURIComponent(evidenceId)}/dimension`,
     'PUT',
     choice,
   )
