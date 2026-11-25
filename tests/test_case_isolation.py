@@ -11,12 +11,13 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from psychtool.core.extract import RuleExtractor
 from psychtool.core.workspace import Passage
 from psychtool.server.app import create_app
 from psychtool.store.sqlite_store import SqliteStore, UnknownCaseError
 from tests.conftest import build_client
 
-B_MARKER = "B-ONLY-MARKER-STRING-9f2c"
+B_MARKER = "B-ONLY-MARKER-STRING-9f2c is here."
 
 
 @pytest.fixture
@@ -31,6 +32,8 @@ def seeded(tmp_path, monkeypatch):
             material_id="m1", title=f"{case_id} intake", provider="self",
             date="2026-11-01", passages=[Passage(id="p001", text=text)],
         )
+        # Suggestions cite stored sentence evidence (ADR 0017), so seed it.
+        case.refresh_evidence(RuleExtractor())
         case.add_claim(
             claim_id=f"{case_id}-claim",
             source_document_id="m1",

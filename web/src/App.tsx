@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { apiRequest, createCase, getWorkspace, jsonRequest, workspaceUrl } from './api'
 import type { Claim, ClaimSuggestion, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
 import { validateCaseId } from './case-form'
+import { citedEvidenceLine } from './claims'
 import MaterialUploadPanel from './components/MaterialUploadPanel'
 import PasteMaterialPanel from './components/PasteMaterialPanel'
 import DimensionsPanel from './components/DimensionsPanel'
@@ -242,6 +243,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
         {suggestionsLoaded && !suggestions.length && <p role="status">No remaining candidates. Accepted claims are available in the section editor.</p>}
         {suggestions.map((item, index) => <div className="intake-card" key={item.id}>
           <p className="field-label">{item.source_document_id} v{item.source_version} / {item.source_passage_id}</p><p>{item.source_text}</p>
+          <p className="field-label" data-testid="cited-evidence-ids">{citedEvidenceLine(item.evidence_ids)}</p>
           <label className="field-label">Claim text<textarea className="editor-input" value={item.text} disabled={busy} onChange={(event) => updateSuggestion(index, { text: event.target.value })} /></label>
           <div className="editor-controls"><label className="field-label">Topic<input className="text-input" disabled={busy} value={item.topic} onChange={(event) => updateSuggestion(index, { topic: event.target.value })} /></label>
             <label className="field-label">Category<input className="text-input" disabled={busy} value={item.category} onChange={(event) => updateSuggestion(index, { category: event.target.value })} /></label></div>

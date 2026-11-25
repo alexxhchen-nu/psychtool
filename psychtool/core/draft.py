@@ -83,7 +83,12 @@ def freeze_draft_input(
         prompt=build_prompt(list(claims), instructions=instructions),
         claims=claims,
         source_refs=tuple(
-            SourceRef(kind="claim", id=claim.id, version=claim.version)
+            SourceRef(
+                kind="claim",
+                id=claim.id,
+                version=claim.version,
+                evidence_ids=list(claim.evidence_ids),
+            )
             for claim in claims
         ),
     )

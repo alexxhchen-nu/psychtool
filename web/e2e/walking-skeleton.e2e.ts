@@ -49,7 +49,10 @@ test('walking skeleton: case -> paste -> evidence -> egress -> save -> reload', 
   await pastePanel.getByRole('button', { name: 'Review intake claims' }).click()
   const intake = page.locator('.intake-panel')
   await intake.getByRole('button', { name: 'Create candidates' }).click()
-  await expect(intake.locator('.intake-card').first()).toBeVisible()
+  const firstCard = intake.locator('.intake-card').first()
+  await expect(firstCard).toBeVisible()
+  // ADR 0017: the card cites stored sentence evidence (never a bare passage).
+  await expect(firstCard.getByTestId('cited-evidence-ids')).toContainText(/ev_[0-9a-f]{24}/)
   await intake.getByRole('button', { name: 'Accept claim' }).first().click()
   await expect(page.locator('.case-meta')).toContainText('1 claims')
 

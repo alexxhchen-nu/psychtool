@@ -105,7 +105,7 @@ def test_prepare_returns_review_preview_without_calling_transport(tmp_path, monk
     assert payload["provider_base_url"] == "http://127.0.0.1:11434/v1"
     assert payload["model"] == "local-model"
     assert payload["source_refs"] == [
-        {"kind": "claim", "id": "claim-1", "version": 1}
+        {"kind": "claim", "id": "claim-1", "version": 1, "evidence_ids": []}
     ]
     assert {"name", "telephone"} <= set(payload["identifier_categories"])
     assert payload["requires_human_review"] is True

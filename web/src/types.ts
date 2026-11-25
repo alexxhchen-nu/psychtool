@@ -32,6 +32,8 @@ export interface Claim {
   topic: string
   verification_status: string
   provider_role: string
+  /** Sentence evidence ids this claim cites (ADR 0017); empty pre-v7. */
+  evidence_ids: string[]
 }
 export interface Workspace { case_id: string }
 export interface Material {
@@ -56,6 +58,8 @@ export interface ClaimSuggestion {
   event_time: string | null
   category: string
   topic: string
+  /** Stored sentence evidence ids this suggestion cites (ADR 0017); never empty. */
+  evidence_ids: string[]
 }
 export interface UploadResult {
   material: Material
@@ -66,7 +70,13 @@ export interface UploadResult {
   /** Present only when blocked_paragraphs > 0; the server's fixed message. */
   blocked_reason?: string
 }
-export interface SourceRef { kind: 'claim' | 'material' | 'draft'; id: string; version: number }
+export interface SourceRef {
+  kind: 'claim' | 'material' | 'draft'
+  id: string
+  version: number
+  /** Sentence evidence ids a claim ref cites (ADR 0017); empty otherwise. */
+  evidence_ids?: string[]
+}
 export type EgressStatus = 'prepared' | 'approved' | 'sent' | 'invalidated' | 'send_interrupted'
 export interface EgressRequest {
   request_id: string

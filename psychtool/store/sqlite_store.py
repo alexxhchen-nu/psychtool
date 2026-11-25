@@ -50,6 +50,7 @@ from psychtool.core.dimensions import (
     match_dimensions,
     parse_dimension_line,
 )
+from psychtool.core.evidence_store import evidence_id as _shared_evidence_id
 from psychtool.core.extract import Extractor, extract_evidence
 from psychtool.core.sections import SectionDraft
 from psychtool.core.workspace import Material, Passage
@@ -62,7 +63,7 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Mirrors the material-id rule used by the ingest path.
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 # R5 (ADR 0015): when SHE chose the category/role, the effective reason is a
 # fixed sentence about her choice — never the rule's keyword sentence, which
@@ -268,6 +269,23 @@ _SCHEMA_STATEMENTS = (
             REFERENCES passages(case_id, material_id, version, passage_id)
     )
     """,
+    # Sentence evidence becomes the only claim source (PT-20 / ADR 0017,
+    # schema v7). This junction records which persisted evidence rows a claim
+    # cites. The composite FK to claims is case-scoped, and the second FK to
+    # evidence(case_id, evidence_id) prevents citing another case's evidence.
+    """
+    CREATE TABLE IF NOT EXISTS claim_evidence (
+        case_id     TEXT NOT NULL,
+        claim_id    TEXT NOT NULL,
+        version     INTEGER NOT NULL,
+        evidence_id TEXT NOT NULL,
+        PRIMARY KEY (case_id, claim_id, version, evidence_id),
+        FOREIGN KEY (case_id, claim_id, version)
+            REFERENCES claims(case_id, claim_id, version) ON DELETE CASCADE,
+        FOREIGN KEY (case_id, evidence_id)
+            REFERENCES evidence(case_id, evidence_id)
+    )
+    """,
     """
     CREATE TRIGGER IF NOT EXISTS audit_log_no_update
     BEFORE UPDATE ON audit_log
@@ -450,20 +468,61 @@ _MIGRATION_STATEMENTS = {
         )
         """,
     ),
+    # Schema v6 -> v7 (PT-20 / ADR 0017): sentence evidence becomes the only
+    # source a claim cites. Purely additive: the new claim_evidence junction
+    # links a claim version to the persisted evidence rows behind it. Existing
+    # claims are backfilled from their (source_document_id, source_version,
+    # source_passage_id) locator against *active* evidence rows in the same
+    # case — never across cases, never from superseded rows, and never by
+    # inventing evidence a passage does not have (a claim whose passage has no
+    # active evidence simply gets zero junction rows). Audit rows are never
+    # rewritten, so the pre-migration chain still verifies.
+    7: (
+        """
+        CREATE TABLE IF NOT EXISTS claim_evidence (
+            case_id     TEXT NOT NULL,
+            claim_id    TEXT NOT NULL,
+            version     INTEGER NOT NULL,
+            evidence_id TEXT NOT NULL,
+            PRIMARY KEY (case_id, claim_id, version, evidence_id),
+            FOREIGN KEY (case_id, claim_id, version)
+                REFERENCES claims(case_id, claim_id, version) ON DELETE CASCADE,
+            FOREIGN KEY (case_id, evidence_id)
+                REFERENCES evidence(case_id, evidence_id)
+        )
+        """,
+        """
+        INSERT OR IGNORE INTO claim_evidence (case_id, claim_id, version, evidence_id)
+        SELECT c.case_id, c.claim_id, c.version, e.evidence_id
+        FROM claims c
+        JOIN evidence e
+          ON e.case_id = c.case_id
+         AND e.material_id = c.source_document_id
+         AND e.material_version = c.source_version
+         AND e.passage_id = c.source_passage_id
+         AND e.status = 'active'
+        """,
+    ),
 }
 
 
 def _execute_migration_statement(
-    connection: sqlite3.Connection, statement: str
+    connection: sqlite3.Connection, statement
 ) -> None:
-    """Run one migration statement.
+    """Run one migration step.
 
     ``ALTER TABLE ... ADD COLUMN`` is skipped when the column already exists:
     some downgrade-fixtures rebuild an older ``user_version`` database from
     the current code, so additive columns may already be present. Skipping
     is safe because the existing column came from the same CREATE/ALTER
     definition (identity of name + definition is checked below).
+
+    A step may also be a callable (e.g. the v7 claim_evidence backfill) that
+    receives the migration connection and decides for itself what applies.
     """
+    if callable(statement):
+        statement(connection)
+        return
     stripped = statement.strip()
     if stripped.upper().startswith("ALTER TABLE") and " ADD COLUMN " in stripped.upper():
         match = re.match(
@@ -476,6 +535,18 @@ def _execute_migration_statement(
             }
             if column in columns:
                 return
+    # The v7 backfill joins claims to evidence; the genuine v1 fixture predates
+    # both tables, so "no such table" means "nothing to backfill", not a
+    # failed open. Any other OperationalError still propagates.
+    if "INSERT OR IGNORE INTO claim_evidence" in stripped:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "claims" not in tables or "evidence" not in tables:
+            return
     connection.execute(statement)
 
 
@@ -1239,6 +1310,10 @@ class CaseStore:
         return updated
 
     def _insert_claim(self, connection: sqlite3.Connection, claim: Claim) -> None:
+        # Evidence ids are validated and stored in the same transaction as the
+        # claim row: an unknown id (or one that belongs to another case) rolls
+        # the whole write back instead of silently dropping the citation.
+        self._validate_evidence_ids(connection, claim.evidence_ids)
         connection.execute(
             "INSERT INTO claims"
             " (case_id, claim_id, version, source_document_id, source_version,"
@@ -1262,9 +1337,44 @@ class CaseStore:
                 claim.verification_status,
             ),
         )
+        for evidence_id in claim.evidence_ids:
+            connection.execute(
+                "INSERT INTO claim_evidence"
+                " (case_id, claim_id, version, evidence_id)"
+                " VALUES (?, ?, ?, ?)",
+                (claim.case_id, claim.id, claim.version, evidence_id),
+            )
 
-    @staticmethod
-    def _row_to_claim(row: sqlite3.Row) -> Claim:
+    def _validate_evidence_ids(
+        self, connection: sqlite3.Connection, evidence_ids: list[str]
+    ) -> None:
+        """Every cited id must exist in THIS case's evidence table.
+
+        An id that is missing — including one that exists only on another
+        case — raises ValueError before any write. Empty lists stay allowed
+        at the store layer for this chunk (PT-20 chunk 1); the suggestion /
+        route layers decide when a claim must cite evidence.
+        """
+        for evidence_id in dict.fromkeys(evidence_ids):
+            row = connection.execute(
+                "SELECT 1 FROM evidence WHERE case_id = ? AND evidence_id = ?",
+                (self._case_id, evidence_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown evidence id for this case: {evidence_id!r}")
+
+    def _evidence_ids_for(
+        self, connection: sqlite3.Connection, claim_id: str, version: int
+    ) -> list[str]:
+        rows = connection.execute(
+            "SELECT evidence_id FROM claim_evidence"
+            " WHERE case_id = ? AND claim_id = ? AND version = ?"
+            " ORDER BY evidence_id",
+            (self._case_id, claim_id, version),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def _row_to_claim(self, row: sqlite3.Row) -> Claim:
         return Claim(
             id=row["claim_id"],
             case_id=row["case_id"],
@@ -1280,6 +1390,9 @@ class CaseStore:
             topic=row["topic"],
             text=row["text"],
             verification_status=row["verification_status"],
+            evidence_ids=self._evidence_ids_for(
+                self._db, row["claim_id"], row["version"]
+            ),
         )
 
     # -- evidence (PT-07 / ADR 0015) ----------------------------------------
@@ -1294,10 +1407,9 @@ class CaseStore:
         end: int,
     ) -> str:
         """Stable id derived from the location only (never rules/category)."""
-        payload = "\x1f".join(
-            (case_id, material_id, str(material_version), passage_id, str(start), str(end))
+        return _shared_evidence_id(
+            case_id, material_id, material_version, passage_id, start, end
         )
-        return "ev_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
     def refresh_evidence(
         self,
@@ -1904,6 +2016,49 @@ class CaseStore:
         if row is None:
             raise KeyError(f"unknown evidence: {evidence_id}")
         return dict(row)
+
+    def active_evidence_ids_by_passage(
+        self, material_id: str, material_version: int
+    ) -> dict[str, list[str]]:
+        """Map passage_id -> sorted active evidence ids for one material version.
+
+        Read-only. Passages with no active stored evidence are omitted, so a
+        suggestion is only ever built on real, persisted sentence rows.
+        """
+        rows = self._db.execute(
+            "SELECT passage_id, evidence_id FROM evidence"
+            " WHERE case_id = ? AND material_id = ? AND material_version = ?"
+            " AND status = 'active'"
+            " ORDER BY passage_id, evidence_id",
+            (self._case_id, material_id, material_version),
+        ).fetchall()
+        by_passage: dict[str, list[str]] = {}
+        for row in rows:
+            by_passage.setdefault(row["passage_id"], []).append(row["evidence_id"])
+        return by_passage
+
+    def evidence_ids_for_material(
+        self, material_id: str, material_version: int
+    ) -> list[str]:
+        """All stored evidence ids (any status) for one material version."""
+        rows = self._db.execute(
+            "SELECT evidence_id FROM evidence"
+            " WHERE case_id = ? AND material_id = ? AND material_version = ?",
+            (self._case_id, material_id, material_version),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def evidence_quotes_for(self, evidence_ids: list[str]) -> list[str]:
+        """Quotes of stored evidence ids in this case (unknown ids skipped)."""
+        if not evidence_ids:
+            return []
+        placeholders = ", ".join("?" for _ in evidence_ids)
+        rows = self._db.execute(
+            f"SELECT quote FROM evidence"
+            f" WHERE case_id = ? AND evidence_id IN ({placeholders})",
+            (self._case_id, *evidence_ids),
+        ).fetchall()
+        return [row["quote"] for row in rows]
 
     def set_evidence_choice(
         self,
