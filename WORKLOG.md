@@ -421,4 +421,5 @@
 - Dimensions page matches the prototype (copy, grouping, chips, source highlights). Screenshot: supervisor compared `web/test-results/dimensions-page.png` to `cur.html` `pDims`/`dimRow`/`dimChip`.
 - All nine R7 ACs have API tests (`test_r7_acN_*`) and e2e titles containing `R7-ACN` (AC7 is the API guard; AC1–AC6 plus Wrong-no-dimension are in Playwright).
 - ADR 0016. R6 invalidation is PT-09; citecheck/draft filtering is PT-12.
+- Follow-up: push CI (`ci.yml` on push) failed once on R7-AC5 because `setupCase` posted materials before the synthetic-confirmation request had landed (403). The test now waits for the confirmation notice to disappear, matching `upload.e2e.ts`. The pull_request CI run on the same head was already green.
 

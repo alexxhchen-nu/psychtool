@@ -68,6 +68,9 @@ async function setupCase(page: import('@playwright/test').Page, prefix: string, 
     .getByRole('checkbox', { name: /only synthetic or separately approved materials/ })
     .check()
   await upload.getByRole('button', { name: 'Confirm and enable upload' }).click()
+  // Wait until the confirmation POST has landed. The API material uploads
+  // below would 403 if they raced the confirmation (push CI flake on AC5).
+  await expect(upload.getByText(/Before the first upload, confirm/)).toBeHidden()
 
   const headers = await sessionHeaders(page)
   const caseResponse = await page.request.post(
@@ -84,7 +87,7 @@ async function setupCase(page: import('@playwright/test').Page, prefix: string, 
       },
     },
   )
-  expect(caseResponse.ok()).toBe(true)
+  expect(caseResponse.ok(), await caseResponse.text()).toBe(true)
 
   if (withList) {
     const listResponse = await page.request.post(
@@ -101,7 +104,7 @@ async function setupCase(page: import('@playwright/test').Page, prefix: string, 
         },
       },
     )
-    expect(listResponse.ok()).toBe(true)
+    expect(listResponse.ok(), await listResponse.text()).toBe(true)
   }
   // The uploads above bypassed the UI, so reload to refresh the App's
   // material state before opening the panels. Reload restores the first
