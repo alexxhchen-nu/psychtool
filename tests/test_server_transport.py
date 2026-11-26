@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from psychtool.config import load_config
-from psychtool.gateway.fake import FAKE_MODEL_TEXT, fake_transport
+from psychtool.gateway.fake import FAKE_UNSOURCED_SENTENCE, fake_transport
 from psychtool.gateway.http import http_transport
 from psychtool.server.app import _select_transport, create_app
 from tests.conftest import build_client
@@ -101,11 +101,13 @@ def test_default_send_path_uses_fake_transport_without_network(tmp_path, monkeyp
     sent = client.post(f"/api/workspaces/case-a/egress/{prepared['request_id']}/send")
 
     assert sent.status_code == 200
-    assert sent.json() == {
-        "request_id": prepared["request_id"],
-        "status": "sent",
-        "text": FAKE_MODEL_TEXT,
-    }
+    body = sent.json()
+    assert body["request_id"] == prepared["request_id"]
+    assert body["status"] == "sent"
+    text = body["text"]
+    assert "FAKE OFFLINE RESPONSE" in text
+    assert "Synthetic observation paragraph." in text
+    assert FAKE_UNSOURCED_SENTENCE in text
     # The sent request persists exactly like a real send and stays send-once.
     persisted = client.get(f"/api/workspaces/case-a/egress/{prepared['request_id']}").json()
     assert persisted["status"] == "sent"

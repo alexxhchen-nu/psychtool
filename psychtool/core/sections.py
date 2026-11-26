@@ -21,17 +21,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from psychtool.core.claims import list_claims
+from psychtool.core.citecheck import (
+    SUMMARY_DRAFT_REASON,
+    CiteCheckResult,
+    DraftFilterBlockedError,
+    DraftSentence,
+    SentenceEvidence,
+    citecheck_text,
+)
 from psychtool.core.draft import build_prompt, select_claims
 from psychtool.core.egress import SourceRef
+from psychtool.core.evidence_store import load_material_evidence
 from psychtool.core.report_templates import (
     ReportTemplate,
     TemplateSection,
     is_clinician_authored_section,
     load_template,
 )
+from psychtool.core.workspace import list_materials
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from psychtool.store.sqlite_store import CaseStore
@@ -69,6 +79,7 @@ class SectionDraft(BaseModel):
     review_gate: ReviewGate = "standard"
     reviewer: str | None = None
     updated_at: str
+    sentences: list[DraftSentence] = Field(default_factory=list)
 
 
 def _meta(workspace: Path) -> dict:
@@ -117,6 +128,49 @@ def _claim_ids(target: SectionTarget) -> set[str]:
     return {c.id for c in list_claims(Path(target))}
 
 
+def _active_evidence(target: SectionTarget) -> list[SentenceEvidence]:
+    """Active evidence rows available to this section's citation check."""
+    if _is_case_store(target):
+        return [
+            SentenceEvidence(evidence_id=row["evidence_id"], quote=row["quote"])
+            for row in target.list_active_evidence()
+        ]
+    workspace = Path(target)
+    rows = []
+    for material in list_materials(workspace):
+        rows.extend(load_material_evidence(workspace, material.id, material.version))
+    return [
+        SentenceEvidence(evidence_id=row["evidence_id"], quote=row["quote"])
+        for row in rows
+        if row.get("status") == "active"
+    ]
+
+
+def _evidence_ids(target: SectionTarget) -> set[str]:
+    """Every evidence id in this case, used to validate supplied citations."""
+    if _is_case_store(target):
+        return target.all_evidence_ids()
+    workspace = Path(target)
+    ids: set[str] = set()
+    for material in list_materials(workspace):
+        for row in load_material_evidence(workspace, material.id, material.version):
+            ids.add(row["evidence_id"])
+    return ids
+
+
+def _uploaded_texts(target: SectionTarget) -> list[str]:
+    """Full text of every uploaded material passage (R7 manual-text allowlist)."""
+    materials = target.list_materials() if _is_case_store(target) else list_materials(Path(target))
+    return [passage.text for material in materials for passage in material.passages]
+
+
+def _existing_sentences(
+    target: SectionTarget, template_id: str, section_id: str
+) -> list[DraftSentence]:
+    draft = get_section(target, template_id, section_id)
+    return list(draft.sentences) if draft is not None else []
+
+
 def save_section(
     target: SectionTarget,
     *,
@@ -127,6 +181,7 @@ def save_section(
     claim_ids: list[str],
     status: SectionStatus = "draft",
     reviewer: str | None = None,
+    sentences: list[DraftSentence] | None = None,
 ) -> SectionDraft:
     template = load_template(template_id)
     if template.version != template_version:
@@ -134,6 +189,8 @@ def save_section(
             f"template {template_id} is at version {template.version}, not {template_version}"
         )
     review_gate = _template_gate(template, section_id)
+    section = _template_section(template, section_id)
+    clinician_authored = is_clinician_authored_section(section)
 
     available = _claim_ids(target)
     missing = [cid for cid in claim_ids if cid not in available]
@@ -145,17 +202,37 @@ def save_section(
     if status == "approved" and review_gate == "licensed_clinician" and not (reviewer or "").strip():
         raise ValueError("licensed_clinician sections require a reviewer to approve")
 
+    provided = None if sentences is None else list(sentences)
+    result = citecheck_text(
+        section_id=section_id,
+        text=text,
+        evidence=_active_evidence(target),
+        existing_sentences=_existing_sentences(target, template_id, section_id),
+        uploaded_texts=_uploaded_texts(target),
+        sentences=provided,
+        clinician_authored=clinician_authored,
+        title=section.title,
+        strict_evidence=provided is not None,
+        known_evidence_ids=_evidence_ids(target),
+    )
+    if result.blocked:
+        raise DraftFilterBlockedError(result.detail or SUMMARY_DRAFT_REASON)
+
+    final_text = result.text
+    final_sentences = result.sentences
+
     if _is_case_store(target):
         return target.save_section(
             template_id=template_id,
             template_version=template_version,
             section_id=section_id,
-            text=text,
+            text=final_text,
             claim_ids=list(dict.fromkeys(claim_ids)),
             status=status,
             review_gate=review_gate,
             reviewer=(reviewer or "").strip() or None,
             updated_at=datetime.now(timezone.utc).isoformat(),
+            sentences=final_sentences,
         )
 
     workspace = Path(target)
@@ -168,12 +245,13 @@ def save_section(
         template_version=template_version,
         case_id=_meta(workspace)["case_id"],
         version=version,
-        text=text,
+        text=final_text,
         claim_ids=list(dict.fromkeys(claim_ids)),
         status=status,
         review_gate=review_gate,
         reviewer=(reviewer or "").strip() or None,
         updated_at=datetime.now(timezone.utc).isoformat(),
+        sentences=final_sentences,
     )
     out = dirpath / f"{section_id}.v{version}.json"
     out.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
@@ -192,6 +270,32 @@ def get_section(target: SectionTarget, template_id: str, section_id: str) -> Sec
     return SectionDraft.model_validate_json(raw)
 
 
+
+def check_section(
+    target: SectionTarget,
+    *,
+    template_id: str,
+    section_id: str,
+    text: str,
+    sentences: list[DraftSentence] | None = None,
+) -> CiteCheckResult:
+    """Annotate a draft without writing. Unknown section ids raise KeyError."""
+    template = load_template(template_id)
+    section = _template_section(template, section_id)
+    return citecheck_text(
+        section_id=section_id,
+        text=text,
+        evidence=_active_evidence(target),
+        existing_sentences=_existing_sentences(target, template_id, section_id),
+        uploaded_texts=_uploaded_texts(target),
+        sentences=None if sentences is None else list(sentences),
+        clinician_authored=is_clinician_authored_section(section),
+        title=section.title,
+        strict_evidence=sentences is not None,
+        known_evidence_ids=_evidence_ids(target),
+    )
+
+
 def section_states(target: SectionTarget, template_id: str) -> list[dict]:
     """Ordered state for every section in a template, defaulting to ``empty``."""
     template = load_template(template_id)
@@ -208,6 +312,7 @@ def section_states(target: SectionTarget, template_id: str) -> list[dict]:
                     "required": section.required,
                     "text": "",
                     "claim_ids": [],
+                    "sentences": [],
                     "version": 0,
                 }
             )
@@ -221,6 +326,7 @@ def section_states(target: SectionTarget, template_id: str) -> list[dict]:
                     "required": section.required,
                     "text": draft.text,
                     "claim_ids": draft.claim_ids,
+                    "sentences": [s.model_dump() for s in draft.sentences],
                     "version": draft.version,
                     "reviewer": draft.reviewer,
                 }

@@ -2,6 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import {
   CLINICIAN_AUTHORED_NOTICE,
   applyGeneratedText,
+  applyUnverifiedGeneratedText,
+  canApplyGeneratedText,
+  CITECHECK_FAILURE_MESSAGE,
+  markSentenceJudgment,
+  unverifiedSentencesFromText,
   canApproveSection,
   draftFromSectionState,
   editDraftText,
@@ -119,5 +124,65 @@ describe('one primary button (save bar)', () => {
     expect(egressPrimaryStepActive('approved', false, false)).toBe(true)
     expect(egressPrimaryStepActive('sending', false, true)).toBe(true)
     expect(egressPrimaryStepActive('sent', false, false)).toBe(false)
+  })
+})
+
+
+const SUMMARY = section('summary', ['source_fact', 'clinical_interpretation'], 'licensed_clinician')
+
+describe('canApplyGeneratedText', () => {
+  test('is false for clinician-authored sections', () => {
+    expect(canApplyGeneratedText(IMPRESSIONS, 'any text')).toBe(false)
+    expect(canApplyGeneratedText(RECOMMENDATIONS, 'I recommend tutoring.')).toBe(false)
+  })
+
+  test('is false for a blocked Summary or History draft', () => {
+    expect(canApplyGeneratedText(SUMMARY, 'I recommend weekly tutoring.')).toBe(false)
+    expect(canApplyGeneratedText(HISTORY, 'This is consistent with a diagnosis of delay.')).toBe(false)
+  })
+
+  test('is true for a clean History or Summary draft', () => {
+    expect(canApplyGeneratedText(HISTORY, 'The teacher notes late-task looking away.')).toBe(true)
+    expect(canApplyGeneratedText(SUMMARY, 'Working memory scores sit below the mid range.')).toBe(true)
+  })
+})
+
+
+describe('markSentenceJudgment', () => {
+  const unsourced = {
+    sentence_id: 'sent_1',
+    ordinal: 1,
+    text: 'The client is very popular with peers.',
+    evidence_ids: [] as string[],
+    state: 'unverified' as const,
+  }
+  const draft = { ...DRAFT, text: unsourced.text, sentences: [unsourced], status: 'draft' as const }
+
+  test('marks an unsourced sentence as my judgment and can unmark it back to unverified', () => {
+    const judged = markSentenceJudgment(draft, 'sent_1', true)
+    expect(judged.sentences[0].state).toBe('my_judgment')
+    const unmarked = markSentenceJudgment(judged, 'sent_1', false)
+    expect(unmarked.sentences[0].state).toBe('unverified')
+  })
+})
+
+
+describe('applyUnverifiedGeneratedText', () => {
+  test('keeps generated text and marks every sentence Unverified', () => {
+    const text = 'FAKE OFFLINE RESPONSE — synthetic placeholder only. This unsourced sentence is a synthetic placeholder.'
+    const next = applyUnverifiedGeneratedText(HISTORY, DRAFT, text, ['claim-1'])
+    expect(next.text).toBe(text)
+    expect(next.status).toBe('draft')
+    expect(next.claimIds).toEqual(['claim-1'])
+    expect(next.sentences.length).toBeGreaterThanOrEqual(2)
+    expect(next.sentences.every((sentence) => sentence.state === 'unverified')).toBe(true)
+    expect(next.sentences.every((sentence) => sentence.evidence_ids.length === 0)).toBe(true)
+    expect(unverifiedSentencesFromText('history', text).map((sentence) => sentence.text).join(' ')).toContain('FAKE OFFLINE RESPONSE')
+    expect(CITECHECK_FAILURE_MESSAGE).toContain('kept as Unverified')
+  })
+
+  test('does not land text on a clinician-authored section', () => {
+    const next = applyUnverifiedGeneratedText(IMPRESSIONS, DRAFT, 'any text', [])
+    expect(next).toBe(DRAFT)
   })
 })

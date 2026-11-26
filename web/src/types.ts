@@ -15,6 +15,13 @@ export interface ReportTemplate {
   title: string
   sections: TemplateSection[]
 }
+export interface DraftSentence {
+  sentence_id: string
+  ordinal: number
+  text: string
+  evidence_ids: string[]
+  state: 'needs_review' | 'unverified' | 'verified' | 'my_judgment'
+}
 export interface SectionState {
   section_id: string
   title: string
@@ -25,6 +32,7 @@ export interface SectionState {
   claim_ids: string[]
   version: number
   reviewer?: string | null
+  sentences?: DraftSentence[]
 }
 export interface Claim {
   id: string

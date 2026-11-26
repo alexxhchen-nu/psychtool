@@ -54,6 +54,7 @@ from psychtool.core.dimensions import (
 from psychtool.core.evidence_store import evidence_id as _shared_evidence_id
 from psychtool.core.extract import Extractor, extract_evidence
 from psychtool.core.sections import SectionDraft
+from psychtool.core.citecheck import DraftSentence, VALID_SENTENCE_STATES
 from psychtool.core.workspace import Material, Passage
 from psychtool.store import audit as _audit
 
@@ -64,7 +65,7 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Mirrors the material-id rule used by the ingest path.
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 # R5 (ADR 0015): when SHE chose the category/role, the effective reason is a
 # fixed sentence about her choice — never the rule's keyword sentence, which
@@ -323,6 +324,45 @@ _SCHEMA_STATEMENTS = (
             REFERENCES evidence(case_id, evidence_id)
     )
     """,
+    # Sentence-level citations (PT-12 / ADR 0021, schema v8). Purely additive:
+    # each draft sentence is persisted with its recomputed id, ordinal, text
+    # and sourced state, and its evidence links are the same case-scoped
+    # junction shape as claim_evidence. The composite FK to sections is
+    # case-scoped, and the FK to evidence(case_id, evidence_id) prevents
+    # citing another case's evidence.
+    """
+    CREATE TABLE IF NOT EXISTS section_sentences (
+        case_id    TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        section_id TEXT NOT NULL,
+        version    INTEGER NOT NULL,
+        sentence_id TEXT NOT NULL,
+        ordinal    INTEGER NOT NULL CHECK (ordinal >= 1),
+        text       TEXT NOT NULL,
+        state      TEXT NOT NULL
+            CHECK (state IN ('needs_review', 'verified', 'unverified', 'my_judgment')),
+        PRIMARY KEY (case_id, template_id, section_id, version, sentence_id),
+        UNIQUE (case_id, template_id, section_id, version, ordinal),
+        FOREIGN KEY (case_id, template_id, section_id, version)
+            REFERENCES sections(case_id, template_id, section_id, version) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sentence_evidence (
+        case_id    TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        section_id TEXT NOT NULL,
+        version    INTEGER NOT NULL,
+        sentence_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        PRIMARY KEY (case_id, template_id, section_id, version, sentence_id, evidence_id),
+        FOREIGN KEY (case_id, template_id, section_id, version, sentence_id)
+            REFERENCES section_sentences(case_id, template_id, section_id, version, sentence_id)
+            ON DELETE CASCADE,
+        FOREIGN KEY (case_id, evidence_id)
+            REFERENCES evidence(case_id, evidence_id)
+    )
+    """,
     """
     CREATE TRIGGER IF NOT EXISTS audit_log_no_update
     BEFORE UPDATE ON audit_log
@@ -538,6 +578,47 @@ _MIGRATION_STATEMENTS = {
          AND e.material_version = c.source_version
          AND e.passage_id = c.source_passage_id
          AND e.status = 'active'
+        """,
+    ),
+    # Schema v7 -> v8 (PT-12 / ADR 0021): sentence-level citations. Purely
+    # additive: the new section_sentences and sentence_evidence tables hold a
+    # draft's canonical sentences and their evidence links. No backfill — an
+    # existing section has no sentences until it is saved again, and its text
+    # is unchanged, so the audit chain created before the migration still
+    # verifies.
+    8: (
+        """
+        CREATE TABLE IF NOT EXISTS section_sentences (
+            case_id    TEXT NOT NULL,
+            template_id TEXT NOT NULL,
+            section_id TEXT NOT NULL,
+            version    INTEGER NOT NULL,
+            sentence_id TEXT NOT NULL,
+            ordinal    INTEGER NOT NULL CHECK (ordinal >= 1),
+            text       TEXT NOT NULL,
+            state      TEXT NOT NULL
+                CHECK (state IN ('needs_review', 'verified', 'unverified', 'my_judgment')),
+            PRIMARY KEY (case_id, template_id, section_id, version, sentence_id),
+            UNIQUE (case_id, template_id, section_id, version, ordinal),
+            FOREIGN KEY (case_id, template_id, section_id, version)
+                REFERENCES sections(case_id, template_id, section_id, version) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sentence_evidence (
+            case_id    TEXT NOT NULL,
+            template_id TEXT NOT NULL,
+            section_id TEXT NOT NULL,
+            version    INTEGER NOT NULL,
+            sentence_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            PRIMARY KEY (case_id, template_id, section_id, version, sentence_id, evidence_id),
+            FOREIGN KEY (case_id, template_id, section_id, version, sentence_id)
+                REFERENCES section_sentences(case_id, template_id, section_id, version, sentence_id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (case_id, evidence_id)
+                REFERENCES evidence(case_id, evidence_id)
+        )
         """,
     ),
 }
@@ -1923,6 +2004,28 @@ class CaseStore:
                     held_back += 1
         return held_back
 
+    def list_active_evidence(self) -> list[dict]:
+        """Active evidence rows in this case, read-only (citation matching)."""
+        rows = self._db.execute(
+            """
+            SELECT evidence_id, quote FROM evidence
+            WHERE case_id = ? AND status = 'active'
+            ORDER BY evidence_id
+            """,
+            (self._case_id,),
+        ).fetchall()
+        return [
+            {"evidence_id": row["evidence_id"], "quote": row["quote"]} for row in rows
+        ]
+
+    def all_evidence_ids(self) -> set[str]:
+        """Every evidence id in this case, regardless of status (validation)."""
+        rows = self._db.execute(
+            "SELECT evidence_id FROM evidence WHERE case_id = ?",
+            (self._case_id,),
+        ).fetchall()
+        return {row["evidence_id"] for row in rows}
+
     def list_evidence(self) -> list[dict]:
         """Active evidence rows plus superseded rows that carry a correction.
 
@@ -2781,8 +2884,14 @@ class CaseStore:
         review_gate: str,
         reviewer: str | None,
         updated_at: str,
+        sentences: list[DraftSentence] | None = None,
     ) -> SectionDraft:
         import json as _json
+
+        sentence_rows = list(sentences or [])
+        for sentence in sentence_rows:
+            if sentence.state not in VALID_SENTENCE_STATES:
+                raise ValueError("invalid sentence state")
 
         with self._store.transaction() as connection:
             row = connection.execute(
@@ -2803,6 +2912,7 @@ class CaseStore:
                 review_gate=review_gate,
                 reviewer=reviewer,
                 updated_at=updated_at,
+                sentences=sentence_rows,
             )
             connection.execute(
                 "INSERT INTO sections"
@@ -2823,6 +2933,44 @@ class CaseStore:
                     updated_at,
                 ),
             )
+            for sentence in sentence_rows:
+                connection.execute(
+                    "INSERT INTO section_sentences"
+                    " (case_id, template_id, section_id, version, sentence_id,"
+                    "  ordinal, text, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        self._case_id,
+                        template_id,
+                        section_id,
+                        version,
+                        sentence.sentence_id,
+                        sentence.ordinal,
+                        sentence.text,
+                        sentence.state,
+                    ),
+                )
+                for evidence_id in dict.fromkeys(sentence.evidence_ids):
+                    exists = connection.execute(
+                        "SELECT 1 FROM evidence WHERE case_id = ? AND evidence_id = ?",
+                        (self._case_id, evidence_id),
+                    ).fetchone()
+                    if exists is None:
+                        raise ValueError(
+                            f"unknown evidence id for this case: {evidence_id!r}"
+                        )
+                    connection.execute(
+                        "INSERT INTO sentence_evidence"
+                        " (case_id, template_id, section_id, version, sentence_id,"
+                        "  evidence_id) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            self._case_id,
+                            template_id,
+                            section_id,
+                            version,
+                            sentence.sentence_id,
+                            evidence_id,
+                        ),
+                    )
             self.append_audit(
                 case_id=self._case_id,
                 action="section.save",
@@ -2831,6 +2979,45 @@ class CaseStore:
                 content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
             )
         return draft
+
+    def _load_section_sentences(
+        self, template_id: str, section_id: str, version: int
+    ) -> list[DraftSentence]:
+        rows = self._db.execute(
+            """
+            SELECT sentence_id, ordinal, text, state FROM section_sentences
+            WHERE case_id = ? AND template_id = ? AND section_id = ? AND version = ?
+            ORDER BY ordinal
+            """,
+            (self._case_id, template_id, section_id, version),
+        ).fetchall()
+        sentences: list[DraftSentence] = []
+        for row in rows:
+            links = self._db.execute(
+                """
+                SELECT evidence_id FROM sentence_evidence
+                WHERE case_id = ? AND template_id = ? AND section_id = ? AND version = ?
+                  AND sentence_id = ?
+                ORDER BY rowid
+                """,
+                (
+                    self._case_id,
+                    template_id,
+                    section_id,
+                    version,
+                    row["sentence_id"],
+                ),
+            ).fetchall()
+            sentences.append(
+                DraftSentence(
+                    sentence_id=row["sentence_id"],
+                    ordinal=row["ordinal"],
+                    text=row["text"],
+                    evidence_ids=[link["evidence_id"] for link in links],
+                    state=row["state"],
+                )
+            )
+        return sentences
 
     def get_section(self, template_id: str, section_id: str) -> SectionDraft | None:
         import json as _json
@@ -2857,4 +3044,7 @@ class CaseStore:
             review_gate=row["review_gate"],
             reviewer=row["reviewer"],
             updated_at=row["updated_at"],
+            sentences=self._load_section_sentences(
+                template_id, section_id, row["version"]
+            ),
         )

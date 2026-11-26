@@ -1,7 +1,8 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { apiRequest, createCase, getWorkspace, jsonRequest, workspaceUrl } from './api'
-import type { Claim, ClaimSuggestion, EvidenceInvalidation, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
+import { apiRequest, createCase, getEvidence, getWorkspace, jsonRequest, sectionWriteRequest, workspaceUrl } from './api'
+import { ApiError } from './api'
+import type { Claim, ClaimSuggestion, DraftSentence, EvidenceInvalidation, EvidenceItem, Material, ReportTemplate, SectionState, SectionStatus, TemplateSection, UploadResult, Workspace } from './types'
 import { validateCaseId } from './case-form'
 import { citedEvidenceLine } from './claims'
 import { applyInvalidationToSections } from './correction'
@@ -11,6 +12,7 @@ import DimensionsPanel from './components/DimensionsPanel'
 import EgressReviewPanel from './components/EgressReviewPanel'
 import EvidencePanel from './components/EvidencePanel'
 import ClaimRow from './components/ClaimRow'
+import SentenceDraft from './components/SentenceDraft'
 import ReportColumns from './components/ReportColumns'
 import SourceCard from './components/SourceCard'
 import { sourceCardFromClaim, sourceCardFromEvidence } from './source-card'
@@ -19,13 +21,18 @@ import {
   CLINICIAN_AUTHORED_EMPTY,
   CLINICIAN_AUTHORED_NOTICE,
   applyGeneratedText,
+  applySentences,
+  applyUnverifiedGeneratedText,
   canApproveSection,
+  CITECHECK_FAILURE_MESSAGE,
   draftFromSectionState,
   editDraftText,
+  markSentenceJudgment,
   saveBarPrimaryAction,
   saveStateLabel,
   sectionUsesGeneration,
   setDraftStatus,
+  textFromSentences,
   toggleDraftClaim,
 } from './section-editor'
 import type { EditorDraft } from './section-editor'
@@ -311,7 +318,7 @@ function Workbench({ workspaceId, template, onBusyChange }: WorkbenchProps) {
           </button></li>
         })}</ol>
       </aside>}
-      editor={<SectionEditor workspaceId={workspaceId} template={template} section={selected} initial={selectedState} claims={claims} sourceRevision={sourceRevision} busy={busy} onBusyChange={changeBusy} onOpenSourceClaim={(claim) => setSourceCard(sourceCardFromClaim(claim, materials))} onSaved={(state) => setSections((items) => items.map((item) => item.section_id === state.section_id ? state : item))} />}
+      editor={<SectionEditor workspaceId={workspaceId} template={template} section={selected} initial={selectedState} claims={claims} sourceRevision={sourceRevision} busy={busy} onBusyChange={changeBusy} onOpenSourceClaim={(claim) => setSourceCard(sourceCardFromClaim(claim, materials))} onOpenEvidence={(item) => setSourceCard(sourceCardFromEvidence(item))} onSaved={(state) => setSections((items) => items.map((item) => item.section_id === state.section_id ? state : item))} />}
       source={<>
         <h3>{approved} of {template.sections.length} approved</h3>
         {sourceCard
@@ -333,8 +340,9 @@ interface EditorProps extends WorkbenchProps {
   busy: boolean
   onSaved: (state: SectionState) => void
   onOpenSourceClaim: (claim: Claim) => void
+  onOpenEvidence: (item: EvidenceItem) => void
 }
-function SectionEditor({ workspaceId, template, section, initial, claims, sourceRevision, busy, onBusyChange, onSaved, onOpenSourceClaim }: EditorProps) {
+function SectionEditor({ workspaceId, template, section, initial, claims, sourceRevision, busy, onBusyChange, onSaved, onOpenSourceClaim, onOpenEvidence }: EditorProps) {
   // R9-AC1/AC2: drafts are kept per section id so switching away and back
   // does not drop unsaved text. The editor itself is NOT keyed by section id.
   const [forms, setForms] = useState<Record<string, EditorDraft>>(() => ({
@@ -356,7 +364,8 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
   const error = errors[section.id] ?? ''
   const clinicianAuthored = !sectionUsesGeneration(section)
   const [sendStepActive, setSendStepActive] = useState(false)
-  useEffect(() => { setSendStepActive(false) }, [section.id])
+  const [selectedSentenceId, setSelectedSentenceId] = useState<string | null>(null)
+  useEffect(() => { setSendStepActive(false); setSelectedSentenceId(null) }, [section.id])
   const approvable = canApproveSection(draft, section.review_gate)
   const barPrimary = saveBarPrimaryAction({ dirty: isDirty, canApprove: approvable, sendStepActive })
 
@@ -393,18 +402,43 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
 
   const generated = useCallback((text: string, claimIds: string[]) => {
     if (!alive.current) return
-    // Defense in depth: even if a caller wires this callback, sections the
-    // clinician writes never receive model text.
-    setForms((current) => {
-      const base = current[section.id] ?? draftFromSectionState(initial)
-      const next = applyGeneratedText(section, base, text, claimIds)
-      return next === base ? current : { ...current, [section.id]: next }
-    })
     if (clinicianAuthored) return
-    markDirty(true)
-    setMessages((current) => ({ ...current, [section.id]: 'Generated draft is in the editor. Review it, then Save section.' }))
-    setErrors((current) => ({ ...current, [section.id]: '' }))
-  }, [clinicianAuthored, initial, markDirty, section])
+    void (async () => {
+      try {
+        const checked = await jsonRequest<{ sentences: DraftSentence[]; blocked: boolean; detail: string | null }>(
+          `${workspaceUrl(workspaceId)}/sections/${encodeURIComponent(section.id)}/citecheck`,
+          'POST',
+          { text, claim_ids: claimIds, template_id: template.template_id },
+        )
+        if (!alive.current) return
+        if (checked.blocked) {
+          setErrors((current) => ({ ...current, [section.id]: checked.detail ?? 'This draft cannot be used.' }))
+          setMessages((current) => ({ ...current, [section.id]: '' }))
+          return
+        }
+        setForms((current) => {
+          const base = current[section.id] ?? draftFromSectionState(initial)
+          const applied = applyGeneratedText(section, base, text, claimIds)
+          if (applied === base) return current
+          return { ...current, [section.id]: applySentences(applied, checked.sentences) }
+        })
+        markDirty(true)
+        setMessages((current) => ({ ...current, [section.id]: 'Generated draft is in the editor. Review it, then Save section.' }))
+        setErrors((current) => ({ ...current, [section.id]: '' }))
+      } catch {
+        if (!alive.current) return
+        setForms((current) => {
+          const base = current[section.id] ?? draftFromSectionState(initial)
+          const applied = applyUnverifiedGeneratedText(section, base, text, claimIds)
+          if (applied === base) return current
+          return { ...current, [section.id]: applied }
+        })
+        markDirty(true)
+        setMessages((current) => ({ ...current, [section.id]: 'Generated draft is in the editor. Review it, then Save section.' }))
+        setErrors((current) => ({ ...current, [section.id]: CITECHECK_FAILURE_MESSAGE }))
+      }
+    })()
+  }, [clinicianAuthored, initial, markDirty, section, template.template_id, workspaceId])
 
   function changeText(text: string) {
     updateDraft((current) => editDraftText(current, text))
@@ -422,16 +456,24 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
     setErrors((current) => ({ ...current, [section.id]: '' }))
     setMessages((current) => ({ ...current, [section.id]: '' }))
     try {
-      const saved = await jsonRequest<{ version: number }>(`${workspaceUrl(workspaceId)}/sections/${encodeURIComponent(section.id)}`, 'PUT', {
+      const saved = await sectionWriteRequest<{ version: number; sentences?: DraftSentence[] }>(`${workspaceUrl(workspaceId)}/sections/${encodeURIComponent(section.id)}`, {
         template_id: template.template_id, template_version: template.version, text: form.text,
         claim_ids: form.claimIds, status: form.status, reviewer: form.reviewer.trim() || null,
+        sentences: form.sentences,
       })
       if (!alive.current) return
+      const savedSentences = saved.sentences ?? form.sentences
       setVersions((current) => ({ ...current, [section.id]: saved.version }))
+      updateDraft((current) => applySentences(current, savedSentences))
       markDirty(false)
-      onSaved({ ...initial, text: form.text, status: form.status, reviewer: form.reviewer.trim() || null, claim_ids: form.claimIds, version: saved.version })
+      onSaved({ ...initial, text: form.text, status: form.status, reviewer: form.reviewer.trim() || null, claim_ids: form.claimIds, version: saved.version, sentences: savedSentences })
       setMessages((current) => ({ ...current, [section.id]: 'Section saved.' }))
-    } catch { if (alive.current) setErrors((current) => ({ ...current, [section.id]: 'Could not save the section. Check required text and reviewer, then try again.' })) }
+    } catch (error) {
+      if (alive.current) {
+        const detail = error instanceof ApiError ? error.serverMessage : null
+        setErrors((current) => ({ ...current, [section.id]: detail ?? 'Could not save the section. Check required text and reviewer, then try again.' }))
+      }
+    }
     finally { if (alive.current) { inFlight.current = false; setSaving(false); onBusyChange(false) } }
   }
   return <article className="section-canvas">
@@ -441,7 +483,35 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
       <h4>You write this section</h4>
       <p>{CLINICIAN_AUTHORED_NOTICE}</p>
     </section>}
-    <div className="editor-block"><label className="field-label" htmlFor="section-text">Section text</label><textarea id="section-text" className="editor-input" value={draft.text} disabled={busy} onChange={(event) => changeText(event.target.value)} rows={14} placeholder={clinicianAuthored ? 'Write this section yourself. It is never generated.' : 'Write this section. Approved sections must be non-empty.'} />
+    <div className="editor-block"><label className="field-label" htmlFor="section-text">Section text</label>
+      {draft.sentences.length > 0 && (
+        <SentenceDraft
+          sentences={draft.sentences}
+          selectedId={selectedSentenceId}
+          disabled={busy}
+          onSelect={setSelectedSentenceId}
+          onCite={(_sentenceId, evidenceId) => {
+            const claimed = claims.find((claim) => claim.evidence_ids.includes(evidenceId))
+            if (claimed) { onOpenSourceClaim(claimed); return }
+            void getEvidence(workspaceId).then((response) => {
+              const item = response.items.find((entry) => entry.id === evidenceId)
+              if (item) onOpenEvidence(item)
+            }).catch(() => { /* source panel stays as-is if evidence cannot be loaded */ })
+          }}
+          onEdit={(sentenceId, nextText) => {
+            const sentences = draft.sentences.map((sentence) => sentence.sentence_id === sentenceId ? { ...sentence, text: nextText } : sentence)
+            updateDraft((current) => ({ ...current, text: textFromSentences(sentences), sentences, status: current.status === 'approved' ? 'draft' : current.status }))
+            markDirty(true)
+            setSelectedSentenceId(sentenceId)
+          }}
+          onMarkJudgment={(sentenceId, judged) => {
+            updateDraft((current) => markSentenceJudgment(current, sentenceId, judged))
+            markDirty(true)
+            setSelectedSentenceId(sentenceId)
+          }}
+        />
+      )}
+      <textarea id="section-text" className={draft.sentences.length > 0 ? 'editor-input sr-only' : 'editor-input'} value={draft.text} disabled={busy} onChange={(event) => changeText(event.target.value)} rows={14} placeholder={clinicianAuthored ? 'Write this section yourself. It is never generated.' : 'Write this section. Approved sections must be non-empty.'} />
       {clinicianAuthored && draft.text.trim() === '' && <p className="you-write-this" data-testid="you-write-this">{CLINICIAN_AUTHORED_EMPTY}</p>}
     </div>
     <div className="editor-controls"><label className="field-label">Status<select className="select-input" disabled={busy} value={draft.status} onChange={(event) => { updateDraft((current) => setDraftStatus(current, event.target.value as SectionStatus)); markDirty(true) }}>{STATUS_ORDER.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></label>

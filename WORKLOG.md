@@ -497,3 +497,53 @@
 
 - 未開始 PT-12、PT-22 或 GROK-53／PT-21。
 - 句子級引用篩選（R9-AC1「每條事實性陳述應能指向所用證據」在本 PT 以章節上已勾選、可點開的來源陳述為準）。
+
+## 2026-11-25 18:50 CST — PT-12：逐句核引用與 Summary 用語攔截（GROK-42 / R10）
+
+**執行模型**：deepseek-v4.1-flash-1017 via Grok Workhorse（kimi 週配額仍用盡）寫了 citecheck 核心與 schema v8 初稿；supervisor 在同一工作樹補完測試、ADR 0021、API、句子編輯介面與 e2e。
+
+### 變更
+
+- 新增 `psychtool/core/citecheck.py`：逐句對本案證據做字面重疊引用；無出處標 Unverified；My judgment 不偽裝成材料事實。草稿過濾**拒絕、不改寫**。
+- schema v8：`section_sentences` / `sentence_evidence`（外鍵帶 case_id）。v7→v8 只加表，不為舊列憑空造引用。
+- Summary 含診斷或建議用語時 citecheck 標記 blocked，保存回固定 400。其他可模型起草的章節套用 R7-AC6/8（診斷用語、未上傳的標準編號／手冊片段）。臨床者專屬章節不套用此過濾。
+- `POST .../sections/{id}/citecheck`：只註記、不寫庫；blocked 仍為 200。
+- 介面：無出處句波浪下劃線與「Unverified · no source found」標籤；可標為 My judgment；引用角標可打開來源卡。標記保存後仍在。
+- 新增 `docs/adr/0021-citecheck-and-summary-guard.md`；三份 README 各加一行。未做 Export、PT-22、PT-21、PT-13。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **828 passed**。
+- `cd web && bun test` → **205 passed / 0 fail**。
+- `cd web && bun run build` → 成功。
+- `cd web && bun run e2e` → **27 passed**。對比：137 筆量測、**0 failures**，最低 3.69:1。截圖差異：1440 **0.71%**、1280 **0.94%**、1024 **1.54%**，皆低於 2%。
+
+### 未解決事項
+
+- 未開始 PT-22、PT-21 或 PT-13。
+- Export（M2／Q7）仍不做；Unverified 標記以保存為準。
+- Fake transport 仍回傳固定占位文字（各句皆為 Unverified）；引用命中由單元測試與含本案證據原文的草稿覆蓋。
+
+## 2026-11-25 19:30 CST — PT-12 後續：citecheck 失敗保留草稿、假傳輸引用句、加寬 Summary 建議攔截
+
+Alex 批准 PT-12 並要求三項跟進，寫在同一分支、同一 PR #14，目標仍是 main。
+
+### 變更
+
+- Send once 成功後若 citecheck 因傳輸錯誤或 5xx 失敗，生成正文保留為未保存草稿，全部標 Unverified，並顯示錯誤；不丟字。用語攔截仍走 200 `blocked` 路徑，不落地違規草稿。
+- 假傳輸在信封含 `<source_material>` 時回一句引用原文、一句無出處句（仍帶 FAKE OFFLINE RESPONSE 標記），讓 e2e 能點 `[n]` 打開來源卡，並看到無出處句的 Unverified 標記。提取時忽略提示詞裡對該標籤的提及。
+- Summary 建議用語改為詞幹（recommend / advis / suggest / refer）與句式（should be / should receive / should undergo / should consider）。仍拒絕並回 400，絕不剝除或重寫。ADR 0021 將詞表標為待心理師驗證（待验证）。「the results suggest」「referred by her school」「should be noted」目前都會被攔下，測試記錄此行為，未為迴避誤傷而放寬規則。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **835 passed**。
+- `cd web && bun test` → **208 passed / 0 fail**。
+- `cd web && bun run build` → 成功。
+- `cd web && bun run e2e` → **29 passed**。對比：137 筆量測、**0 failures**，最低 3.69:1。截圖差異：1440 **0.69%**、1280 **0.92%**、1024 **1.57%**，皆低於 2%。
+- 突變：拿掉失敗落地、讓假傳輸忽略信封、收窄建議攔截，對應測試皆轉紅。
+
+### 未解決事項
+
+- 未開始 PT-22、PT-21 或 PT-13。
+- Export（M2／Q7）仍不做。
+- 建議用語詞表待心理師驗證；上述三句誤傷候選未放寬。
