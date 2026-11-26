@@ -59,6 +59,12 @@ cd web && bun test && bun run build                   # frontend unit tests (inc
 cd web && bunx playwright install chromium && bun run e2e   # end-to-end (incl. security.e2e: CSP headers, no CSP console errors, tokenless 401)
 ```
 
+**M1 acceptance (PT-15).** The report is [docs/m1-acceptance-report.md](docs/m1-acceptance-report.md) (42 of 48 PRD acceptance criteria are in M1; R12 and R14, six criteria, are M2). Run the developer spot-check checklist on synthetic data (this is not the still-Open PRD §5 product-success gate, and it does not write a report export):
+
+```bash
+uv run --extra dev python scripts/spotcheck.py
+```
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">
@@ -92,6 +98,7 @@ The literature informs design judgments; it does not demonstrate that this proje
 | 1 | [Clinical requirements and constraints](docs/clinical-requirements.md) | Users, scope, review responsibility, privacy constraints |
 | 3 | [Empirical research entry](references/empirical-research.md) | Retrieval coverage, reviewed evidence, access limits |
 | 4 | [First workflow spec](docs/first-workflow-spec.md) | End-to-end behavior and acceptance conditions |
+| 5 | [M1 acceptance report](docs/m1-acceptance-report.md) | M1 AC matrix, R7 internal checklist, spot-check script, and NOT VERIFIED |
 
 More entry points: [HHS source ledger](references/hhs-sources.md) · [Skills and tools register](docs/skills-and-tools.md) · [SPEC 0001](docs/specs/0001-first-workflow-cli.md) · [ADRs](docs/adr/) · [Tickets](.scratch/first-workflow/issues/)
 

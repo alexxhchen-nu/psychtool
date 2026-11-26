@@ -59,6 +59,12 @@ cd web && bun test && bun run build                   # 前端单元测试（含
 cd web && bunx playwright install chromium && bun run e2e   # 端到端（含 security.e2e：CSP 标头、无 CSP console 错误、无令牌 401）
 ```
 
+**M1 验收（PT-15）。** 报告见 [docs/m1-acceptance-report.md](docs/m1-acceptance-report.md)（PRD 48 条 AC 中 42 条属 M1，R12 与 R14 共 6 条属 M2）。对合成数据跑开发者抽查清单（不是 PRD 第 5 节仍待同意的产品成功门槛，亦不导出报告）：
+
+```bash
+uv run --extra dev python scripts/spotcheck.py
+```
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">
@@ -92,6 +98,7 @@ cd web && bunx playwright install chromium && bun run e2e   # 端到端（含 se
 | 1 | [临床需求与设计约束](docs/clinical-requirements.md) | 使用者、范围、审核责任与隐私约束 |
 | 3 | [实证研究入口](references/empirical-research.md) | 检索覆盖、已核读证据与访问限制 |
 | 4 | [工作流规格草案](docs/first-workflow-spec.md) | 首个端到端行为与验收条件 |
+| 5 | [M1 验收报告](docs/m1-acceptance-report.md) | M1 AC 矩阵、R7 内部清单、抽查脚本与 NOT VERIFIED |
 
 更多资料入口：[HHS 来源记录](references/hhs-sources.md) · [技能与工具选型](docs/skills-and-tools.md) · [开发规格 SPEC 0001](docs/specs/0001-first-workflow-cli.md) · [架构决策 ADR](docs/adr/) · [实现票](.scratch/first-workflow/issues/)
 

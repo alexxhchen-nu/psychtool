@@ -618,3 +618,38 @@ Alex 於 20:52 CT 將 #16 合入 main（merge a38a2a0）並批准本卡。Workho
 - `bun run e2e`：32 passed（含 3 條 error-copy）；截圖差異 1440 0.69%、1280 0.92%、1024 1.57%（皆低於 2%）。
 - Mutation：斷網文案、保存失敗文案、服務未起文案的逐字測試，以及「保存失敗後清空編輯區」的 e2e，均殺掉對應測試後還原。
 - Linux 啟動器腳本測試（假的健康檢查與記錄打開的 URL）通過。未做真實 Finder／檔案總管雙擊、Gatekeeper 或 SmartScreen。
+
+---
+
+## 2026-11-25 21:27 CST — PT-15：M1 驗收（GROK-45）
+
+Alex 於 21:15 CT 將 #17 合入 main（merge 3a925cc）並批准本卡。Workhorse 在 PT-13 與 PT-14 已連續三次停滯（kimi 0 回合；deepseek-flash 思考中掛起）；本卡未再等待第四次停滯，由 supervisor 依同一 brief 完成。既有 Workhorse 金鑰未改。未做即時 Vertex（改期 PT-24 / GROK-56）；未改 ADR 0003 的本機回環規則；未開始 PT-21、PT-22、PT-24。
+
+### 變更
+
+- 從 PRD R1–R16 的 Given/When/Then 子彈自行點算：共 48 條 AC，其中 R12×3 與 R14×3 屬 M2，M1 範圍 42 條，與 ticket / tech-design §7 一致。
+- 新增驗收報告 `docs/m1-acceptance-report.md`：每條 AC 一列（ID、需求、M1 或 M2、證明測試、結果）；R7 內部驗收清單；NOT VERIFIED（真實雙擊／Gatekeeper／隔離屬性／SmartScreen、即時 Vertex、所有待验证项）。報告內每項主張都連到測試、CI 或 commit。
+- 新增合成資料抽查腳本 `scripts/spotcheck.py`（實作於 `psychtool/acceptance/spotcheck.py`）：列印 10 項 pass/fail，不寫報告匯出，不是 PRD 第 5 節仍待同意的產品成功門檻。
+- R15 補測：`tests/test_privacy_copy.py`、`web/e2e/privacy.e2e.ts`（橫幅在工作頁／上傳／貼上面板可見；介面不得聲稱 HIPAA 合規）。
+- 矩陣與報告由 `tests/test_m1_ac_matrix.py` 鎖定（48 / 42 / 6，每個 M1 列都有真實測試名稱）。
+- 三份 README 與本 WORKLOG 已更新。
+
+R3-AC1、R10-AC2 中的匯出子句因 Q7 在 M1 不可行使；已證明隔離與 Unverified 保存後仍在，並記錄介面沒有 Export 入口。未把 M1 掃描拒絕當成 R12 M2 AC 通過。
+
+### 未驗證
+
+- 未在真實 Finder 或檔案總管中雙擊；未驗證 macOS Gatekeeper／隔離屬性；未驗證 Windows SmartScreen。未增加 windows/macos CI 矩陣（Alex 將自行嘗試真實雙擊）。
+- 未做即時 Vertex「生成一章」（改期 PT-24 / GROK-56）。
+- 待心理師裁定的待验证项（含 ADR 0021 詞表與「the results suggest」「should be noted」「advisory」「suggestion」誤傷，以及 tech-design §7 服務未起文案）見報告 NOT VERIFIED。
+
+### 驗證（本機工作樹）
+
+- `pytest -q`：890 passed。
+- `cd web && bun test`：236 pass / 0 fail。
+- `bun run build`：通過。
+- `bun run e2e`：33 passed（含新增 privacy e2e）；截圖差異 1440 0.69%、1280 0.92%、1024 1.57%（皆低於 2%）。
+- 抽查腳本：10 passed, 0 failed。
+- Mutation：矩陣測試名稱打錯、App.tsx 加入「is HIPAA compliant」、抽查種子插入編造摘錄，均使對應測試失敗後還原。
+- 全新 clone（`0ceba7d`）：pytest 890 passed；bun test 236 pass；build 通過；e2e 33 passed，截圖差異同上；抽查腳本 10 passed。
+- 後續：抽查腳本結束後還原 `PSYCHTOOL_*` 環境變數（避免污染同進程測試）；pytest 891 passed。
+- CI（`cd2abb7`）綠：push https://github.com/alexxhchen-nu/psychtool/actions/runs/45749449296 ；pull_request https://github.com/alexxhchen-nu/psychtool/actions/runs/45749454118 。
