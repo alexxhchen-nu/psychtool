@@ -595,3 +595,26 @@ Alex 於 20:00 CT 將 #15 合入 main（merge a3e0c5b）並批准本卡。Workho
 
 - 未做即時 Vertex「用 A-001 真生成一章」：需要 Google Cloud 專案、區域、型號與驗證方式（例如安全密鑰中的短期權杖或日後的 ADC）。
 - 未開始 PT-21、PT-22 或 PT-14。
+
+## 2026-11-25 21:10 CST — PT-14：啟動器與錯誤文案（GROK-44 / R1-AC3 + R16）
+
+Alex 於 20:52 CT 將 #16 合入 main（merge a38a2a0）並批准本卡。Workhorse 的 kimi（0 回合）與 deepseek-flash（2 回合後停滯約 4 分鐘）均取消；由 supervisor 依同一 brief 完成。既有 Workhorse 金鑰未改。未做即時 Vertex（改期 PT-24）；未改 ADR 0003 的本機回環規則。
+
+### 變更
+
+- 新增 `launchers/Start Psychtool.command`（macOS）與 `launchers/Start Psychtool.cmd`（Windows）：雙擊後啟動本機伺服器並打開瀏覽器。形式為無額外依賴的腳本（ADR 0023）。
+- 服務未起、斷網（Q5）、保存失敗（Q5）三條文案為常數，並有位元組級測試。保存失敗後編輯區文字保留（e2e）。空個案提示不再出現命令列或工作目錄說明。可見狀態文字不再使用「API」。
+- 即時 Vertex「生成一章」與 PT-21、PT-22、PT-24 均未開始。
+
+### 未驗證
+
+- 未在真實 Finder 或檔案總管中雙擊；未驗證 macOS Gatekeeper／隔離屬性；未驗證 Windows SmartScreen。未增加 windows/macos CI 矩陣。
+
+### 驗證（本機工作樹）
+
+- `pytest -q`：883 passed。
+- `cd web && bun test`：236 pass / 0 fail。
+- `bun run build`：通過。
+- `bun run e2e`：32 passed（含 3 條 error-copy）；截圖差異 1440 0.69%、1280 0.92%、1024 1.57%（皆低於 2%）。
+- Mutation：斷網文案、保存失敗文案、服務未起文案的逐字測試，以及「保存失敗後清空編輯區」的 e2e，均殺掉對應測試後還原。
+- Linux 啟動器腳本測試（假的健康檢查與記錄打開的 URL）通過。未做真實 Finder／檔案總管雙擊、Gatekeeper 或 SmartScreen。
