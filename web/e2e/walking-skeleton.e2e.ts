@@ -73,7 +73,7 @@ test('walking skeleton: case -> paste -> evidence -> egress -> save -> reload', 
   await egress.getByRole('button', { name: 'Prepare request' }).click()
   await expect(egress.getByText('Prepared — review required')).toBeVisible()
   // Read the full exact outgoing text before approving.
-  const preview = egress.getByRole('region', { name: 'Exact model input' })
+  const preview = egress.getByRole('region', { name: /De-identified preview/ })
   await expect(preview).toContainText('Synthetic practice note')
   await egress.getByLabel(/Synthetic approval reason/).fill('Reviewed full synthetic outgoing text')
   await egress.getByRole('checkbox', { name: /reviewed the complete input/ }).check()

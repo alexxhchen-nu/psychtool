@@ -355,7 +355,7 @@ export default function EgressReviewPanel({
         <h4>Identifier categories replaced</h4>
         <p>{request.identifier_categories.length > 0 ? request.identifier_categories.join(' · ') : 'No identifier categories detected.'}</p>
         <p>Automatic detection can miss identifiers. Review the entire input; this is not a compliance assurance.</p>
-        <h4 id={`${id}-preview-title`}>Exact model input</h4>
+        <h4 id={`${id}-preview-title`}>De-identified preview — exact model input</h4>
         <pre className="egress-preview" tabIndex={0} role="region" aria-labelledby={`${id}-preview-title`}>{request.preview}</pre>
 
         {(state.phase === 'prepared' || state.phase === 'approving') && <>

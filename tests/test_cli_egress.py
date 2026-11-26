@@ -78,7 +78,7 @@ def test_real_draft_without_reviewer_stays_prepared_and_does_not_send(
 ):
     _configure(monkeypatch, tier="real")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope))
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope))
 
     result = runner.invoke(
         app,
@@ -114,7 +114,7 @@ def test_cli_preview_is_redacted_and_never_prints_raw_identifiers(
         topic="contact",
         text="Jane Doe called 312-555-0142.",
     )
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: "unused")
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: "unused")
 
     result = runner.invoke(
         app,
@@ -132,7 +132,7 @@ def test_cli_preview_is_redacted_and_never_prints_raw_identifiers(
 def test_synthetic_draft_requires_explicit_auto_approval(ws, runner, monkeypatch):
     _configure(monkeypatch, tier="synthetic")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope))
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope))
 
     result = runner.invoke(
         app,
@@ -149,7 +149,7 @@ def test_draft_max_cost_fails_before_request_or_transport(ws, runner, monkeypatc
     calls = []
     monkeypatch.setattr(
         cli_module,
-        "http_transport",
+        "_cli_transport",
         lambda config, envelope: calls.append(envelope),
     )
 
@@ -188,7 +188,7 @@ def test_synthetic_draft_auto_approval_with_reason_sends(ws, runner, monkeypatch
         assert request.approval_reason == "frozen synthetic fixture"
         return "Synthetic draft text."
 
-    monkeypatch.setattr(cli_module, "http_transport", transport)
+    monkeypatch.setattr(cli_module, "_cli_transport", transport)
     result = runner.invoke(
         app,
         [
@@ -213,7 +213,7 @@ def test_synthetic_draft_auto_approval_with_reason_sends(ws, runner, monkeypatch
 def test_synthetic_cli_binds_approval_to_displayed_hash(ws, runner, monkeypatch):
     _configure(monkeypatch, tier="synthetic")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope) or "Clean output.")
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope) or "Clean output.")
     show_prepared = cli_module._show_prepared_request
 
     def replace_after_display(request):
@@ -248,7 +248,7 @@ def test_real_draft_confirmation_sends_human_approved_request(
         observed.append((request.status, request.approval_mode, request.reviewer))
         return "Confirmed draft."
 
-    monkeypatch.setattr(cli_module, "http_transport", transport)
+    monkeypatch.setattr(cli_module, "_cli_transport", transport)
     result = runner.invoke(
         app,
         [
@@ -272,7 +272,7 @@ def test_real_draft_confirmation_sends_human_approved_request(
 def test_real_draft_rejection_leaves_request_prepared(ws, runner, monkeypatch):
     _configure(monkeypatch, tier="real")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope))
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope))
 
     result = runner.invoke(
         app,
@@ -297,7 +297,7 @@ def test_real_draft_rejection_leaves_request_prepared(ws, runner, monkeypatch):
 def test_real_draft_eof_leaves_request_prepared(ws, runner, monkeypatch):
     _configure(monkeypatch, tier="real")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope))
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope))
 
     result = runner.invoke(
         app,
@@ -322,7 +322,7 @@ def test_real_draft_eof_leaves_request_prepared(ws, runner, monkeypatch):
 def test_draft_rejects_mixed_real_and_synthetic_options(ws, runner, monkeypatch):
     _configure(monkeypatch, tier="synthetic")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope))
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope))
 
     result = runner.invoke(
         app,
@@ -349,7 +349,7 @@ def test_draft_rejects_mixed_real_and_synthetic_options(ws, runner, monkeypatch)
 def test_eval_cli_requires_explicit_synthetic_approval(runner, monkeypatch):
     _configure(monkeypatch, tier="synthetic")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope))
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope))
     fixture = Path(__file__).parent.parent / "fixtures" / "adolescent-background.json"
 
     result = runner.invoke(app, ["eval", "--fixture", str(fixture)])
@@ -361,7 +361,7 @@ def test_eval_cli_requires_explicit_synthetic_approval(runner, monkeypatch):
 def test_eval_cli_rejects_real_config_auto_approval(runner, monkeypatch):
     _configure(monkeypatch, tier="real")
     calls = []
-    monkeypatch.setattr(cli_module, "http_transport", lambda config, envelope: calls.append(envelope))
+    monkeypatch.setattr(cli_module, "_cli_transport", lambda config, envelope: calls.append(envelope))
     fixture = Path(__file__).parent.parent / "fixtures" / "adolescent-background.json"
 
     result = runner.invoke(
@@ -412,7 +412,7 @@ def test_judge_uses_judge_model_and_approved_request(ws, runner, monkeypatch):
         assert {ref.kind for ref in request.source_refs} == {"draft", "claim"}
         return '{"verdict":"supported","explanation":"ok"}'
 
-    monkeypatch.setattr(cli_module, "http_transport", transport)
+    monkeypatch.setattr(cli_module, "_cli_transport", transport)
     result = runner.invoke(
         app,
         [

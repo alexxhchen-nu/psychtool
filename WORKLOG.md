@@ -570,3 +570,28 @@ Alex 於 19:39 CT 將 #14 合入 main（merge f92340f）。本卡只做兩處修
 
 - “the results suggest”“should be noted”“advisory”“suggestion” 仍待心理師驗證。
 - 未開始 PT-22、PT-21 或 PT-13。
+
+## 2026-11-25 20:25 CST — PT-13：Vertex AI Gemini 適配器（GROK-43 / R11）
+
+Alex 於 20:00 CT 將 #15 合入 main（merge a3e0c5b）並批准本卡。Workhorse 的 kimi 與 deepseek-flash 均在 0 回合停滯後取消；由 supervisor 依同一 brief 完成。
+
+### 變更
+
+- 新增 Vertex AI Gemini 輸送層（OpenAI 相容 `/chat/completions`，stdlib urllib）。權杖只來自 `PSYCHTOOL_VERTEX_ACCESS_TOKEN` 或測試注入的 `token_provider`，不探測 ADC。
+- 命名設定檔 `fake` / `vertex` / `real`。Google AI Studio / Gemini Developer API 主機在 `vertex` 與 `http` 輸送層一律拒絕。
+- `real` 檔（無 BAA 開關）拒絕非本機端點；測試以 socket egress guard 證明零出網。本機回環仍可依 ADR 0003 經人工批准。
+- 外發預覽標題改為「De-identified preview — exact model input」。ADR 0022 記錄上述決定與即時 Vertex 呼叫所需條件。
+
+### 驗證（本機工作樹）
+
+- `pytest -q`：875 passed。
+- `cd web && bun test`：226 pass / 0 fail。
+- `bun run build`：通過。
+- `bun run e2e`：29 passed；截圖差異 1440 0.69%、1280 0.92%、1024 1.57%（皆低於 2%）。
+- Walking-skeleton e2e 以 FakeTransport 完成合成檔即時檢查（Prepare → 去標識預覽 → Approve → Send once → 未存草稿）。
+- Mutation：hash binding、成功後不可重發、AI Studio 拒絕、`real` 檔雲端出網拒絕，均殺掉對應測試。
+
+### 未解決事項
+
+- 未做即時 Vertex「用 A-001 真生成一章」：需要 Google Cloud 專案、區域、型號與驗證方式（例如安全密鑰中的短期權杖或日後的 ADC）。
+- 未開始 PT-21、PT-22 或 PT-14。
