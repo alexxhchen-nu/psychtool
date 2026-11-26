@@ -63,10 +63,12 @@ from psychtool.core.categorize import (
     default_rules,
 )
 from psychtool.core.report_templates import list_templates, load_template, manifest_as_dict
+from psychtool.core.citecheck import DraftFilterBlockedError, DraftSentence
 from psychtool.core.sections import (
     ClinicianAuthoredSectionError,
     SectionStatus,
     build_section_request_input,
+    check_section,
     save_section,
     section_states,
 )
@@ -108,6 +110,14 @@ class SectionPayload(BaseModel):
     claim_ids: list[str] = Field(default_factory=list)
     status: SectionStatus = "draft"
     reviewer: str | None = None
+    sentences: list[DraftSentence] | None = None
+
+
+class CiteCheckPayload(BaseModel):
+    text: str = ""
+    template_id: str = "intake-report"
+    claim_ids: list[str] = Field(default_factory=list)
+    sentences: list[DraftSentence] | None = None
 
 
 class NamesPayload(BaseModel):
@@ -681,11 +691,33 @@ def create_app(session_token: str | None = None) -> FastAPI:
                 claim_ids=body.claim_ids,
                 status=body.status,
                 reviewer=body.reviewer,
+                sentences=body.sentences,
             )
+        except DraftFilterBlockedError as exc:
+            raise HTTPException(status_code=400, detail=exc.reason) from None
         except (KeyError, ValueError) as exc:
             # Fixed detail: section errors may quote claim ids or text.
             raise HTTPException(status_code=400, detail="invalid section") from exc
         return draft.model_dump()
+
+    @app.post("/api/workspaces/{case_id}/sections/{section_id}/citecheck")
+    def post_citecheck(case_id: str, section_id: str, body: CiteCheckPayload) -> dict:
+        """Annotate a draft without writing. A blocked result is still HTTP 200."""
+        try:
+            result = check_section(
+                _case(case_id),
+                template_id=body.template_id,
+                section_id=section_id,
+                text=body.text,
+                sentences=body.sentences,
+            )
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid section") from exc
+        return {
+            "sentences": [sentence.model_dump() for sentence in result.sentences],
+            "blocked": result.blocked,
+            "detail": result.detail,
+        }
 
     @app.post("/api/workspaces/{case_id}/egress/prepare")
     def prepare_egress(case_id: str, body: PrepareEgressPayload) -> dict:

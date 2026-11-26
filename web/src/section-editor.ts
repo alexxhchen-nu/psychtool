@@ -1,14 +1,16 @@
 // R9 (PT-11): section-editor state transitions, kept pure so the UI rules are
 // unit-testable. Clinician-authored sections never accept generated text.
 
+import { draftFilterBlocked } from './citecheck'
 import { isClinicianAuthoredSection } from './sections'
-import type { SectionState, SectionStatus, TemplateSection } from './types'
+import type { DraftSentence, SectionState, SectionStatus, TemplateSection } from './types'
 
 export interface EditorDraft {
   text: string
   status: SectionStatus
   reviewer: string
   claimIds: string[]
+  sentences: DraftSentence[]
 }
 
 export const CLINICIAN_AUTHORED_NOTICE =
@@ -18,13 +20,14 @@ export const CLINICIAN_AUTHORED_NOTICE =
 export const CLINICIAN_AUTHORED_EMPTY = 'You write this'
 
 export function draftFromSectionState(
-  initial: Pick<SectionState, 'text' | 'status' | 'reviewer' | 'claim_ids'>,
+  initial: Pick<SectionState, 'text' | 'status' | 'reviewer' | 'claim_ids' | 'sentences'>,
 ): EditorDraft {
   return {
     text: initial.text,
     status: initial.status,
     reviewer: initial.reviewer ?? '',
     claimIds: [...initial.claim_ids],
+    sentences: [...(initial.sentences ?? [])],
   }
 }
 
@@ -32,6 +35,17 @@ export function draftFromSectionState(
 export function sectionUsesGeneration(section: TemplateSection): boolean {
   return !isClinicianAuthoredSection(section)
 }
+
+/** False when generated text must not land: clinician-authored or filtered. */
+export function canApplyGeneratedText(
+  section: TemplateSection,
+  text: string,
+  uploadedTexts: readonly string[] = [],
+): boolean {
+  if (isClinicianAuthoredSection(section)) return false
+  return !draftFilterBlocked(section, text, uploadedTexts).blocked
+}
+
 
 /** The save bar's persistent state label (R9-AC1). */
 export function saveStateLabel(dirty: boolean): 'Unsaved changes' | 'Saved' {
@@ -52,11 +66,11 @@ export function applyGeneratedText(
   claimIds: string[],
 ): EditorDraft {
   if (isClinicianAuthoredSection(section)) return draft
-  return { ...draft, text, claimIds: [...claimIds], status: 'draft', reviewer: '' }
+  return { ...draft, text, claimIds: [...claimIds], status: 'draft', reviewer: '', sentences: [] }
 }
 
 export function editDraftText(draft: EditorDraft, text: string): EditorDraft {
-  return { ...draft, text, status: statusAfterEdit(draft.status, text) }
+  return { ...draft, text, status: statusAfterEdit(draft.status, text), sentences: [] }
 }
 
 export function toggleDraftClaim(draft: EditorDraft, claimId: string): EditorDraft {
@@ -110,4 +124,25 @@ export function egressPrimaryStepActive(
   if (phase === 'approving' || phase === 'sending') return true
   if (phase === 'approved') return !locked
   return false
+}
+
+export function applySentences(draft: EditorDraft, sentences: DraftSentence[]): EditorDraft {
+  return { ...draft, sentences: [...sentences] }
+}
+
+export function textFromSentences(sentences: DraftSentence[]): string {
+  return sentences.map((sentence) => sentence.text).join(' ')
+}
+
+export function markSentenceJudgment(
+  draft: EditorDraft,
+  sentenceId: string,
+  judged: boolean,
+): EditorDraft {
+  const sentences = draft.sentences.map((sentence) => {
+    if (sentence.sentence_id !== sentenceId) return sentence
+    if (judged) return { ...sentence, state: 'my_judgment' as const }
+    return { ...sentence, state: sentence.evidence_ids.length ? 'needs_review' as const : 'unverified' as const }
+  })
+  return { ...draft, sentences }
 }

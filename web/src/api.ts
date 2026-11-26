@@ -1,3 +1,4 @@
+import { DRAFT_FILTER_REASON, SUMMARY_DRAFT_REASON } from './citecheck'
 import type { ApprovalInput, DimensionChoiceInput, DimensionChoiceResult, DimensionsResponse, EgressRequest, EvidenceChoiceInput, EvidenceChoiceResult, EvidenceRefreshResult, EvidenceResponse, PasteMaterialInput, PrepareInput, SendResult, UploadResult, Workspace } from './types'
 
 /** Never expose an error response body: validation/provider errors may contain input. */
@@ -64,6 +65,26 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
 export function jsonRequest<T>(url: string, method: 'POST' | 'PUT', body: unknown): Promise<T> {
   return apiRequest<T>(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 }
+
+const SECTION_FILTER_REASONS = new Set([SUMMARY_DRAFT_REASON, DRAFT_FILTER_REASON])
+
+/** PUT a section. Surfaces only the two fixed draft-filter reasons. */
+export async function sectionWriteRequest<T>(url: string, body: unknown): Promise<T> {
+  let response: Response
+  try { response = await fetch(url, withSessionHeader({ method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })) } catch { throw new ApiError(0) }
+  if (!response.ok) {
+    let serverMessage: string | null = null
+    try {
+      const payload = await response.json() as { detail?: unknown }
+      if (typeof payload.detail === 'string' && SECTION_FILTER_REASONS.has(payload.detail)) {
+        serverMessage = payload.detail
+      }
+    } catch { serverMessage = null }
+    throw new ApiError(response.status, serverMessage)
+  }
+  try { return await response.json() as T } catch { throw new ApiError(0) }
+}
+
 
 /**
  * Requests with the server's fixed rejection reason surfaced. Only the

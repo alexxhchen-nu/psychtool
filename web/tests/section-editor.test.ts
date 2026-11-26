@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   CLINICIAN_AUTHORED_NOTICE,
   applyGeneratedText,
+  canApplyGeneratedText,
+  markSentenceJudgment,
   canApproveSection,
   draftFromSectionState,
   editDraftText,
@@ -119,5 +121,44 @@ describe('one primary button (save bar)', () => {
     expect(egressPrimaryStepActive('approved', false, false)).toBe(true)
     expect(egressPrimaryStepActive('sending', false, true)).toBe(true)
     expect(egressPrimaryStepActive('sent', false, false)).toBe(false)
+  })
+})
+
+
+const SUMMARY = section('summary', ['source_fact', 'clinical_interpretation'], 'licensed_clinician')
+
+describe('canApplyGeneratedText', () => {
+  test('is false for clinician-authored sections', () => {
+    expect(canApplyGeneratedText(IMPRESSIONS, 'any text')).toBe(false)
+    expect(canApplyGeneratedText(RECOMMENDATIONS, 'I recommend tutoring.')).toBe(false)
+  })
+
+  test('is false for a blocked Summary or History draft', () => {
+    expect(canApplyGeneratedText(SUMMARY, 'I recommend weekly tutoring.')).toBe(false)
+    expect(canApplyGeneratedText(HISTORY, 'This is consistent with a diagnosis of delay.')).toBe(false)
+  })
+
+  test('is true for a clean History or Summary draft', () => {
+    expect(canApplyGeneratedText(HISTORY, 'The teacher notes late-task looking away.')).toBe(true)
+    expect(canApplyGeneratedText(SUMMARY, 'Working memory scores sit below the mid range.')).toBe(true)
+  })
+})
+
+
+describe('markSentenceJudgment', () => {
+  const unsourced = {
+    sentence_id: 'sent_1',
+    ordinal: 1,
+    text: 'The client is very popular with peers.',
+    evidence_ids: [] as string[],
+    state: 'unverified' as const,
+  }
+  const draft = { ...DRAFT, text: unsourced.text, sentences: [unsourced], status: 'draft' as const }
+
+  test('marks an unsourced sentence as my judgment and can unmark it back to unverified', () => {
+    const judged = markSentenceJudgment(draft, 'sent_1', true)
+    expect(judged.sentences[0].state).toBe('my_judgment')
+    const unmarked = markSentenceJudgment(judged, 'sent_1', false)
+    expect(unmarked.sentences[0].state).toBe('unverified')
   })
 })
