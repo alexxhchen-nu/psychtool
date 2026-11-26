@@ -26,23 +26,33 @@ export const DRAFT_DIAGNOSIS_PHRASES = [
 ] as const
 
 // Stem list pending psychologist validation (待验证). See ADR 0021.
-export const RECOMMENDATION_STEMS = ['recommend', 'advis', 'suggest', 'refer'] as const
+// "refer" is not a bare stem: it is matched only as referral phrasing (PT-23).
+export const RECOMMENDATION_STEMS = ['recommend', 'advis', 'suggest'] as const
 export const RECOMMENDATION_SHOULD_PATTERNS = [
   'should be',
   'should receive',
   'should undergo',
   'should consider',
 ] as const
-export const RECOMMENDATION_PHRASES = RECOMMENDATION_STEMS
+export const RECOMMENDATION_PHRASES = ['treatment plan'] as const
 
 const RECOMMENDATION_STEM_RE = new RegExp(
   `\\b(?:${RECOMMENDATION_STEMS.join('|')})\\w*`,
   'i',
 )
 const RECOMMENDATION_SHOULD_RE = /\bshould\s+(?:be|receive|undergo|consider)\b/i
+// Referral phrasing only. "referred by", "for reference", and "the
+// reference group" do not match. Up to three words may sit between
+// "refer" and "to"/"for" so "refer the family to" is caught.
+const RECOMMENDATION_REFERRAL_RE = /\b(?:refer(?:\s+\w+){0,3}\s+(?:to|for)|referral\s+(?:to|for)|should\s+be\s+referred|referred\s+(?:to|for))\b/i
 
 function recommendationHit(text: string): boolean {
-  return RECOMMENDATION_STEM_RE.test(text) || RECOMMENDATION_SHOULD_RE.test(text)
+  return (
+    RECOMMENDATION_STEM_RE.test(text)
+    || RECOMMENDATION_PHRASES.some((phrase) => text.toLowerCase().includes(phrase))
+    || RECOMMENDATION_REFERRAL_RE.test(text)
+    || RECOMMENDATION_SHOULD_RE.test(text)
+  )
 }
 
 const CRITERION_PATTERNS: RegExp[] = [
