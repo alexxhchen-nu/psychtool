@@ -652,3 +652,4 @@ R3-AC1、R10-AC2 中的匯出子句因 Q7 在 M1 不可行使；已證明隔離�
 - Mutation：矩陣測試名稱打錯、App.tsx 加入「is HIPAA compliant」、抽查種子插入編造摘錄，均使對應測試失敗後還原。
 - 全新 clone（`0ceba7d`）：pytest 890 passed；bun test 236 pass；build 通過；e2e 33 passed，截圖差異同上；抽查腳本 10 passed。
 - 後續：抽查腳本結束後還原 `PSYCHTOOL_*` 環境變數（避免污染同進程測試）；pytest 891 passed。
+- CI（`cd2abb7`）綠：push https://github.com/alexxhchen-nu/psychtool/actions/runs/45749449296 ；pull_request https://github.com/alexxhchen-nu/psychtool/actions/runs/45749454118 。

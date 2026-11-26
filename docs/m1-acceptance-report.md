@@ -2,7 +2,7 @@
 
 Date: 2026-11-25, America/Chicago. Synthetic data only. This report does not start PT-21, PT-22, or PT-24, and it does not attempt a live Vertex call.
 
-Every claim below is tied to a test in this repository, a CI run of this pull request, or a commit SHA. Where a CI run URL is not yet filled in, the claim refers to the `ci` workflow on the commit that last updated this file (added in a follow-up once the first run exists).
+Every claim below is tied to a test in this repository, a CI run of this pull request, or a commit SHA. CI run URLs for this head are listed in the Verification record.
 
 ## Count
 
@@ -198,4 +198,9 @@ Verified on a clean clone of `0ceba7d` (branch `pt-15-m1-acceptance`), 2026-11-2
 
 ### CI
 
-CI run URLs for the `ci` workflow of this pull request will be added in a follow-up commit once the first GitHub Actions run exists.
+Green `ci` workflow runs on head `cd2abb71ac253fea409576326433586d0f9f218e` (PR #18):
+
+- push: https://github.com/alexxhchen-nu/psychtool/actions/runs/45749449296
+- pull_request: https://github.com/alexxhchen-nu/psychtool/actions/runs/45749454118
+
+Earlier green runs on this branch include push https://github.com/alexxhchen-nu/psychtool/actions/runs/45749247050 (`a5fa188`) and pull_request https://github.com/alexxhchen-nu/psychtool/actions/runs/45749285366. A pre-existing Node 20 deprecation annotation on `actions/checkout@v4` / `astral-sh/setup-uv@v5` is unchanged.
