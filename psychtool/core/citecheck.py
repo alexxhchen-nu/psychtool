@@ -48,16 +48,31 @@ DRAFT_DIAGNOSIS_PHRASES: tuple[str, ...] = tuple(
     phrase for phrase in DIAGNOSIS_PHRASES if phrase != DISCLAIMER_PHRASE
 )
 
-# Recommendation wording, used ONLY by the Summary guard. Literal, short,
-# case-insensitive, and deliberately a fixed list — not a semantic detector.
-RECOMMENDATION_PHRASES: tuple[str, ...] = (
-    "i recommend",
-    "it is recommended",
-    "recommend that",
-    "recommendation is",
-    "should be treated",
-    "treatment plan",
+# Recommendation wording, used ONLY by the Summary guard. Stem and phrase
+# matching is literal, case-insensitive, and deliberately not a semantic
+# detector. The list is pending psychologist validation (待验证); see ADR 0021.
+RECOMMENDATION_STEMS: tuple[str, ...] = (
+    "recommend",
+    "advis",
+    "suggest",
+    "refer",
 )
+RECOMMENDATION_SHOULD_PATTERNS: tuple[str, ...] = (
+    "should be",
+    "should receive",
+    "should undergo",
+    "should consider",
+)
+_RECOMMENDATION_STEM_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(stem) for stem in RECOMMENDATION_STEMS) + r")\w*",
+    re.IGNORECASE,
+)
+_RECOMMENDATION_SHOULD_RE = re.compile(
+    r"\bshould\s+(?:be|receive|undergo|consider)\b",
+    re.IGNORECASE,
+)
+# Kept as an alias of the stem list so existing importers do not break.
+RECOMMENDATION_PHRASES: tuple[str, ...] = RECOMMENDATION_STEMS
 
 SUMMARY_DRAFT_REASON = "a Summary draft must not contain diagnostic or recommendation wording"
 DRAFT_FILTER_REASON = "draft text must not contain diagnostic wording or un-uploaded manual text"
@@ -293,11 +308,12 @@ def _diagnostic_fragment(text: str, uploaded_texts: Sequence[str]) -> str | None
 
 
 def _recommendation_fragment(text: str) -> str | None:
-    lowered = text.casefold()
-    for phrase in RECOMMENDATION_PHRASES:
-        index = lowered.find(phrase)
-        if index >= 0:
-            return text[index : index + len(phrase)]
+    match = _RECOMMENDATION_STEM_RE.search(text)
+    if match is not None:
+        return match.group(0)
+    match = _RECOMMENDATION_SHOULD_RE.search(text)
+    if match is not None:
+        return match.group(0)
     return None
 
 
@@ -392,6 +408,8 @@ __all__ = [
     "DRAFT_DIAGNOSIS_PHRASES",
     "DRAFT_FILTER_REASON",
     "RECOMMENDATION_PHRASES",
+    "RECOMMENDATION_SHOULD_PATTERNS",
+    "RECOMMENDATION_STEMS",
     "SUMMARY_DRAFT_REASON",
     "VALID_SENTENCE_STATES",
     "CiteCheckResult",

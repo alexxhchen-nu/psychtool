@@ -37,7 +37,19 @@ describe('summaryDraftBlocked', () => {
   test('flags diagnostic and recommendation wording', () => {
     expect(summaryDraftBlocked('The profile suggests a diagnosis of a delay.')).toBe(true)
     expect(summaryDraftBlocked('I recommend weekly tutoring.')).toBe(true)
+    expect(summaryDraftBlocked('The notes advised a follow-up meeting.')).toBe(true)
+    expect(summaryDraftBlocked('The student should receive extra time.')).toBe(true)
+    expect(summaryDraftBlocked('The student should undergo a hearing screen.')).toBe(true)
+    expect(summaryDraftBlocked('The team should consider a later start time.')).toBe(true)
     expect(summaryDraftBlocked('Scores sit below the mid range on working memory.')).toBe(false)
+  })
+
+  // Recorded current hits under Alex's stem / "should be" rule. Do not loosen
+  // the rule here; these are listed for psychologist validation (待验证).
+  test('currently flags ordinary factual wording that matches the stems', () => {
+    expect(summaryDraftBlocked('The results suggest a slower processing speed on this task.')).toBe(true)
+    expect(summaryDraftBlocked('She was referred by her school for this evaluation.')).toBe(true)
+    expect(summaryDraftBlocked('It should be noted that the session ran past the scheduled time.')).toBe(true)
   })
 })
 

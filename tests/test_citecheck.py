@@ -9,6 +9,7 @@ import pytest
 from psychtool.core.citecheck import (
     DRAFT_FILTER_REASON,
     SUMMARY_DRAFT_REASON,
+    _recommendation_fragment,
     DraftFilterBlockedError,
     DraftSentence,
     SentenceEvidence,
@@ -230,3 +231,48 @@ def test_clinical_impressions_may_contain_diagnosis_wording(tmp_path):
     loaded = get_section(ws, "intake-report", "clinical_impressions")
     assert loaded is not None
     assert loaded.text == text
+
+
+# Ordinary factual wording that also matches the current stem / "should be"
+# rule. These are recorded as currently blocked so the list is not silently
+# loosened; they are listed for the psychologist (待验证). See ADR 0021.
+SUMMARY_FALSE_POSITIVE_CANDIDATES = (
+    "The results suggest a slower processing speed on this task.",
+    "She was referred by her school for this evaluation.",
+    "It should be noted that the session ran past the scheduled time.",
+)
+
+
+def test_summary_recommendation_stems_and_should_patterns_are_blocked():
+    examples = (
+        "I recommend weekly sessions with the school counselor.",
+        "The notes advised a follow-up meeting next month.",
+        "A suggestion in the file is to repeat the timed task.",
+        "The team will refer the family to a community tutor.",
+        "The student should be offered a quieter testing room.",
+        "The student should receive extra time on written tasks.",
+        "The student should undergo a hearing screen before the next visit.",
+        "The team should consider a later start time for testing.",
+    )
+    for text in examples:
+        assert check_draft_text("summary", text) == SUMMARY_DRAFT_REASON, text
+        result = citecheck_text(section_id="summary", text=text)
+        assert result.blocked is True
+        assert result.detail == SUMMARY_DRAFT_REASON
+        assert result.text == text
+
+
+def test_summary_false_positive_candidates_are_currently_blocked():
+    """Document current stem / 'should be' hits; do not loosen the rule here."""
+    for text in SUMMARY_FALSE_POSITIVE_CANDIDATES:
+        fragment = _recommendation_fragment(text)
+        assert fragment is not None, text
+        assert check_draft_text("summary", text) == SUMMARY_DRAFT_REASON, (text, fragment)
+        result = citecheck_text(section_id="summary", text=text)
+        assert result.blocked is True
+        assert result.text == text
+
+
+def test_history_is_not_blocked_by_recommendation_wording():
+    text = "I recommend weekly tutoring."
+    assert check_draft_text("history", text) is None

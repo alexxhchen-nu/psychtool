@@ -2,8 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import {
   CLINICIAN_AUTHORED_NOTICE,
   applyGeneratedText,
+  applyUnverifiedGeneratedText,
   canApplyGeneratedText,
+  CITECHECK_FAILURE_MESSAGE,
   markSentenceJudgment,
+  unverifiedSentencesFromText,
   canApproveSection,
   draftFromSectionState,
   editDraftText,
@@ -160,5 +163,26 @@ describe('markSentenceJudgment', () => {
     expect(judged.sentences[0].state).toBe('my_judgment')
     const unmarked = markSentenceJudgment(judged, 'sent_1', false)
     expect(unmarked.sentences[0].state).toBe('unverified')
+  })
+})
+
+
+describe('applyUnverifiedGeneratedText', () => {
+  test('keeps generated text and marks every sentence Unverified', () => {
+    const text = 'FAKE OFFLINE RESPONSE — synthetic placeholder only. This unsourced sentence is a synthetic placeholder.'
+    const next = applyUnverifiedGeneratedText(HISTORY, DRAFT, text, ['claim-1'])
+    expect(next.text).toBe(text)
+    expect(next.status).toBe('draft')
+    expect(next.claimIds).toEqual(['claim-1'])
+    expect(next.sentences.length).toBeGreaterThanOrEqual(2)
+    expect(next.sentences.every((sentence) => sentence.state === 'unverified')).toBe(true)
+    expect(next.sentences.every((sentence) => sentence.evidence_ids.length === 0)).toBe(true)
+    expect(unverifiedSentencesFromText('history', text).map((sentence) => sentence.text).join(' ')).toContain('FAKE OFFLINE RESPONSE')
+    expect(CITECHECK_FAILURE_MESSAGE).toContain('kept as Unverified')
+  })
+
+  test('does not land text on a clinician-authored section', () => {
+    const next = applyUnverifiedGeneratedText(IMPRESSIONS, DRAFT, 'any text', [])
+    expect(next).toBe(DRAFT)
   })
 })

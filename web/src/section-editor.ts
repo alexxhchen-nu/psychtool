@@ -69,6 +69,42 @@ export function applyGeneratedText(
   return { ...draft, text, claimIds: [...claimIds], status: 'draft', reviewer: '', sentences: [] }
 }
 
+const SENTENCE_SPLIT = /(?<=[.!?。！？])\s+/
+
+/** Split draft text into sentences for an unverified fallback. */
+export function splitDraftSentences(text: string): string[] {
+  const trimmed = text.trim()
+  if (trimmed === '') return []
+  const parts = trimmed.split(SENTENCE_SPLIT).map((part) => part.trim()).filter((part) => part !== '')
+  return parts.length > 0 ? parts : [trimmed]
+}
+
+/** Mark every sentence Unverified when citation checking could not run. */
+export function unverifiedSentencesFromText(sectionId: string, text: string): DraftSentence[] {
+  return splitDraftSentences(text).map((sentenceText, index) => ({
+    sentence_id: `sent_fallback_${sectionId}_${index}`,
+    ordinal: index + 1,
+    text: sentenceText,
+    evidence_ids: [],
+    state: 'unverified' as const,
+  }))
+}
+
+/** Land generated text after a citecheck transport or 5xx failure: keep the text, mark Unverified. */
+export function applyUnverifiedGeneratedText(
+  section: TemplateSection,
+  draft: EditorDraft,
+  text: string,
+  claimIds: string[],
+): EditorDraft {
+  const applied = applyGeneratedText(section, draft, text, claimIds)
+  if (applied === draft) return draft
+  return applySentences(applied, unverifiedSentencesFromText(section.id, text))
+}
+
+export const CITECHECK_FAILURE_MESSAGE =
+  'Could not check citations for this draft. The generated text was kept as Unverified.'
+
 export function editDraftText(draft: EditorDraft, text: string): EditorDraft {
   return { ...draft, text, status: statusAfterEdit(draft.status, text), sentences: [] }
 }

@@ -147,6 +147,48 @@ def test_api_summary_recommendation_is_400(tmp_path, monkeypatch):
     assert summary["text"] == ""
 
 
+def test_api_summary_should_receive_is_400_and_is_not_rewritten(tmp_path, monkeypatch):
+    _store(tmp_path, monkeypatch)
+    client = _client(tmp_path, monkeypatch)
+    text = "The student should receive extra time on written tasks."
+    response = client.put(
+        "/api/workspaces/case-a/sections/summary",
+        json={
+            "template_id": "intake-report",
+            "template_version": 1,
+            "text": text,
+            "claim_ids": ["c1"],
+            "status": "draft",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == SUMMARY_DRAFT_REASON
+    states = client.get(
+        "/api/workspaces/case-a/sections", params={"template_id": "intake-report"}
+    ).json()
+    summary = next(s for s in states if s["section_id"] == "summary")
+    assert summary["version"] == 0
+    assert summary["text"] == ""
+
+
+def test_api_summary_false_positive_candidates_are_currently_400(tmp_path, monkeypatch):
+    _store(tmp_path, monkeypatch)
+    client = _client(tmp_path, monkeypatch)
+    text = "The results suggest a slower processing speed on this task."
+    response = client.put(
+        "/api/workspaces/case-a/sections/summary",
+        json={
+            "template_id": "intake-report",
+            "template_version": 1,
+            "text": text,
+            "claim_ids": ["c1"],
+            "status": "draft",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == SUMMARY_DRAFT_REASON
+
+
 def test_api_history_diagnosis_is_400(tmp_path, monkeypatch):
     _store(tmp_path, monkeypatch)
     client = _client(tmp_path, monkeypatch)

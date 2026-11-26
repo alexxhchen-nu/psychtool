@@ -25,14 +25,25 @@ export const DRAFT_DIAGNOSIS_PHRASES = [
   'criteria for',
 ] as const
 
-export const RECOMMENDATION_PHRASES = [
-  'i recommend',
-  'it is recommended',
-  'recommend that',
-  'recommendation is',
-  'should be treated',
-  'treatment plan',
+// Stem list pending psychologist validation (待验证). See ADR 0021.
+export const RECOMMENDATION_STEMS = ['recommend', 'advis', 'suggest', 'refer'] as const
+export const RECOMMENDATION_SHOULD_PATTERNS = [
+  'should be',
+  'should receive',
+  'should undergo',
+  'should consider',
 ] as const
+export const RECOMMENDATION_PHRASES = RECOMMENDATION_STEMS
+
+const RECOMMENDATION_STEM_RE = new RegExp(
+  `\\b(?:${RECOMMENDATION_STEMS.join('|')})\\w*`,
+  'i',
+)
+const RECOMMENDATION_SHOULD_RE = /\bshould\s+(?:be|receive|undergo|consider)\b/i
+
+function recommendationHit(text: string): boolean {
+  return RECOMMENDATION_STEM_RE.test(text) || RECOMMENDATION_SHOULD_RE.test(text)
+}
 
 const CRITERION_PATTERNS: RegExp[] = [
   /\bcriteri(?:a|on)\s+[A-Za-z]{0,2}\.?\s*\d+\b/i,
@@ -62,7 +73,7 @@ function diagnosticOrManualHit(text: string, uploadedTexts: readonly string[]): 
 }
 
 export function summaryDraftBlocked(text: string, uploadedTexts: readonly string[] = []): boolean {
-  return diagnosticOrManualHit(text, uploadedTexts) || containsPhrase(text, RECOMMENDATION_PHRASES)
+  return diagnosticOrManualHit(text, uploadedTexts) || recommendationHit(text)
 }
 
 export function draftFilterBlocked(

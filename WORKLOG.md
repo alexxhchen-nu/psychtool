@@ -524,3 +524,26 @@
 - Export（M2／Q7）仍不做；Unverified 標記以保存為準。
 - Fake transport 仍回傳固定占位文字（各句皆為 Unverified）；引用命中由單元測試與含本案證據原文的草稿覆蓋。
 
+## 2026-11-25 19:30 CST — PT-12 後續：citecheck 失敗保留草稿、假傳輸引用句、加寬 Summary 建議攔截
+
+Alex 批准 PT-12 並要求三項跟進，寫在同一分支、同一 PR #14，目標仍是 main。
+
+### 變更
+
+- Send once 成功後若 citecheck 因傳輸錯誤或 5xx 失敗，生成正文保留為未保存草稿，全部標 Unverified，並顯示錯誤；不丟字。用語攔截仍走 200 `blocked` 路徑，不落地違規草稿。
+- 假傳輸在信封含 `<source_material>` 時回一句引用原文、一句無出處句（仍帶 FAKE OFFLINE RESPONSE 標記），讓 e2e 能點 `[n]` 打開來源卡，並看到無出處句的 Unverified 標記。提取時忽略提示詞裡對該標籤的提及。
+- Summary 建議用語改為詞幹（recommend / advis / suggest / refer）與句式（should be / should receive / should undergo / should consider）。仍拒絕並回 400，絕不剝除或重寫。ADR 0021 將詞表標為待心理師驗證（待验证）。「the results suggest」「referred by her school」「should be noted」目前都會被攔下，測試記錄此行為，未為迴避誤傷而放寬規則。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **835 passed**。
+- `cd web && bun test` → **208 passed / 0 fail**。
+- `cd web && bun run build` → 成功。
+- `cd web && bun run e2e` → **29 passed**。對比：137 筆量測、**0 failures**，最低 3.69:1。截圖差異：1440 **0.69%**、1280 **0.92%**、1024 **1.57%**，皆低於 2%。
+- 突變：拿掉失敗落地、讓假傳輸忽略信封、收窄建議攔截，對應測試皆轉紅。
+
+### 未解決事項
+
+- 未開始 PT-22、PT-21 或 PT-13。
+- Export（M2／Q7）仍不做。
+- 建議用語詞表待心理師驗證；上述三句誤傷候選未放寬。

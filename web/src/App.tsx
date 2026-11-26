@@ -22,7 +22,9 @@ import {
   CLINICIAN_AUTHORED_NOTICE,
   applyGeneratedText,
   applySentences,
+  applyUnverifiedGeneratedText,
   canApproveSection,
+  CITECHECK_FAILURE_MESSAGE,
   draftFromSectionState,
   editDraftText,
   markSentenceJudgment,
@@ -425,7 +427,15 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
         setErrors((current) => ({ ...current, [section.id]: '' }))
       } catch {
         if (!alive.current) return
-        setErrors((current) => ({ ...current, [section.id]: 'Could not check citations for this draft.' }))
+        setForms((current) => {
+          const base = current[section.id] ?? draftFromSectionState(initial)
+          const applied = applyUnverifiedGeneratedText(section, base, text, claimIds)
+          if (applied === base) return current
+          return { ...current, [section.id]: applied }
+        })
+        markDirty(true)
+        setMessages((current) => ({ ...current, [section.id]: 'Generated draft is in the editor. Review it, then Save section.' }))
+        setErrors((current) => ({ ...current, [section.id]: CITECHECK_FAILURE_MESSAGE }))
       }
     })()
   }, [clinicianAuthored, initial, markDirty, section, template.template_id, workspaceId])

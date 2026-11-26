@@ -78,3 +78,40 @@ test('Summary: a draft with recommendation wording is refused and not saved', as
   await page.locator('.section-rail').getByRole('button', { name: /^Summary,/ }).click()
   await expect(page.getByLabel('Section text')).toHaveValue('')
 })
+
+test('History: clicking a citation opens the source card and the uncited sentence is Unverified', async ({ page }) => {
+  await openSyntheticWorkspace(page)
+  await acceptFirstClaim(page)
+  await generateHistory(page)
+
+  await expect(page.getByLabel('Section text')).toHaveValue(/FAKE OFFLINE RESPONSE/)
+  const cited = page.getByTestId('sentence-cite')
+  await expect(cited.first()).toBeVisible()
+  const unverified = page.getByTestId('sentence-unverified')
+  await expect(unverified.first()).toBeVisible()
+  await expect(unverified.first()).toHaveCSS('text-decoration-style', 'wavy')
+
+  await cited.first().click()
+  const card = page.getByTestId('source-card')
+  await expect(card).toBeVisible()
+  await expect(card.getByTestId('source-status')).toBeVisible()
+  await expect(card).toContainText(/Synthetic (practice note|follow-up)/i)
+})
+
+test('History: citecheck 5xx after Send once keeps the generated text as Unverified', async ({ page }) => {
+  await openSyntheticWorkspace(page)
+  await acceptFirstClaim(page)
+  await page.route('**/sections/**/citecheck', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'unavailable' }) })
+  })
+  await generateHistory(page)
+
+  const editor = page.getByLabel('Section text')
+  await expect(editor).toHaveValue(/FAKE OFFLINE RESPONSE/)
+  await expect(page.getByTestId('save-state')).toHaveText('Unsaved changes')
+  await expect(page.getByRole('alert')).toContainText('Could not check citations for this draft')
+  await expect(page.getByRole('alert')).toContainText('kept as Unverified')
+  await expect(page.getByTestId('sentence-unverified').first()).toBeVisible()
+  await expect(page.getByTestId('sentence-unverified').first()).toHaveCSS('text-decoration-style', 'wavy')
+})
+

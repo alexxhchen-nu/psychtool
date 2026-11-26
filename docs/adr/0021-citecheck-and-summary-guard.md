@@ -15,13 +15,25 @@
 4. **My judgment（R10-AC3）。** 她把一句尚未核對的文字標為自己的專業判斷後，該句按判斷處理，不再偽裝成材料裡已經寫明的事實。無出處的判斷句保持 `my_judgment`，不得被翻成 Unverified。
 
 5. **用語攔截：拒絕，不改寫。**
-   - Summary：含診斷用語或建議用語（字面短語表，不是語義分類器）時，citecheck 回 `blocked`，保存回固定 400：「a Summary draft must not contain diagnostic or recommendation wording」。
+   - Summary：含診斷用語或建議用語時，citecheck 回 `blocked`，保存回固定 400：「a Summary draft must not contain diagnostic or recommendation wording」。建議用語採字面詞幹與固定句式，不是語義分類器：**詞幹** `recommend`、`advis`、`suggest`、`refer`；**句式** `should be` / `should receive` / `should undergo` / `should consider`。此詞表**待心理師驗證（待验证）**，尚未定稿。目前「the results suggest」「referred by her school」「should be noted」這類普通敘述也會被攔下；不得為迴避誤傷而自行放寬規則，改由心理師裁定後再改。
    - 其他可由模型起草的章節：含診斷用語，或含她未上傳材料中的標準編號／手冊式片段（R7-AC6／AC8）時，拒絕並回固定 400：「draft text must not contain diagnostic wording or un-uploaded manual text」。若該片段是已上傳原文的子字串，則不因此攔截。
    - 臨床者專屬章節（Clinical Impressions、Recommendations）仍由她撰寫，本過濾不套用；它們也仍不會被模型自動填寫（ADR 0020）。
    - 維度頁上的固定聲明「This is not a diagnosis. The diagnosis is yours.」不是草稿違規。
    - 被拒絕時正文原樣留下，不剝除、不替換、不自動重寫。
 
+
+## 建議用語詞表（待验证）
+
+詞表由 Alex 於 2026-11-25 指定，仍待心理師確認後才能視為穩定規則。攔截仍然是拒絕並回 400，絕不剝除或重寫正文。
+
+目前已知會被攔下的普通敘述（誤傷候選，尚未放寬）：
+
+- "the results suggest"
+- "referred by her school"
+- "should be noted"
+
 ## 超出範圍
+
 
 - PT-22 為來源卡補上段落／字元範圍。
 - PT-21／GROK-53 的 claim-verify HTTP 路由。
