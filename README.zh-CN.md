@@ -47,6 +47,8 @@ cd web && bun install && bun run build   # 构建前端（FastAPI 直接提供 w
 cd .. && uv run psychtool-server         # 打开 http://127.0.0.1:8000
 ```
 
+**不必使用命令行即可启动（ADR 0023）。** 部署者已安装含 `uv` 或 `.venv` 的副本之后，非技术用户可在 macOS 双击 `launchers/Start Psychtool.command`，或在 Windows 双击 `launchers/Start Psychtool.cmd`。快捷方式会启动本机服务器并打开浏览器。若写作工作区尚未运行，页面会说明请再双击 Start Psychtool 后刷新，或联系安装者。若电脑离线或某一章无法保存，页面使用 Q5 已定原文（见 ADR 0023）。启动器已在 Linux 上做脚本测试；真实的 Finder／资源管理器双击、macOS Gatekeeper 与 Windows SmartScreen 尚未验证。
+
 **本地安全基线（ADR 0011）。** 服务器仅绑定 loopback（非 loopback 的 `PSYCHTOOL_HOST` 拒绝启动）；每次启动产生一组会话令牌，所有 `/api/*`（除 `GET /api/health`）需带 `X-Psychtool-Token`；每个响应带严格 CSP 与安全标头；启动自检拒绝把数据库放进云同步文件夹（磁盘加密仅警告）。审计日志为 SQLite 内仅追加、哈希链保护的 `audit_log` 表，与状态变更同一事务写入。**开发提示**：直接打开服务器提供的页面即自动带令牌；用 Vite dev server 时，须把同一组 `PSYCHTOOL_SESSION_TOKEN`（≥32 字符）设给后端与前端 proxy，否则 API 返回 401。
 
 测试：

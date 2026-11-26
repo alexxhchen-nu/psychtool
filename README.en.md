@@ -47,6 +47,8 @@ cd web && bun install && bun run build   # build the frontend (FastAPI serves we
 cd .. && uv run psychtool-server         # open http://127.0.0.1:8000
 ```
 
+**Starting without the command line (ADR 0023).** After the deployer has installed a checkout with `uv` or a `.venv`, a non-technical user can double-click `launchers/Start Psychtool.command` (macOS) or `launchers/Start Psychtool.cmd` (Windows). The shortcut starts the local server and opens the browser. If the writing workspace is not running, the page explains that she should double-click Start Psychtool and reload, or ask the person who installed it. If the computer is offline, or a section cannot be saved, the page uses the fixed Q5 wording (see ADR 0023). This has been script-tested on Linux; a real Finder/Explorer double-click, macOS Gatekeeper, and Windows SmartScreen have not been verified.
+
 **Local security baseline (ADR 0011).** The server binds to loopback only (a non-loopback `PSYCHTOOL_HOST` refuses to start); every start mints a session token that all `/api/*` routes (except `GET /api/health`) require via `X-Psychtool-Token`; every response carries a strict CSP and hardening headers; startup self-checks refuse a database inside a cloud-sync folder (disk encryption warns only). The audit trail is an append-only, hash-chained `audit_log` table inside SQLite, written in the same transaction as the state change. **Dev note**: pages served by the server itself carry the token automatically; when using the Vite dev server, set the same `PSYCHTOOL_SESSION_TOKEN` (≥32 chars) for both the backend and the frontend proxy, or the API answers 401.
 
 Tests:

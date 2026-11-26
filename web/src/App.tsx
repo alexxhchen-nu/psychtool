@@ -36,6 +36,16 @@ import {
   toggleDraftClaim,
 } from './section-editor'
 import type { EditorDraft } from './section-editor'
+import {
+  EMPTY_WORKSPACE_HINT,
+  HEALTH_CHECKING,
+  HEALTH_NOT_RUNNING,
+  HEALTH_OFFLINE,
+  HEALTH_READY,
+  OFFLINE_MESSAGE,
+  initialLoadErrorMessage,
+  saveFailureMessage,
+} from './copy'
 import './App.css'
 
 export const PRIVACY_BANNER = 'Please note: This prototype is not HIPAA compliant yet. Do not enter real patient information. Use only synthetic or separately approved practice materials.'
@@ -52,27 +62,40 @@ function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [templateId, setTemplateId] = useState('')
   const [workspaceId, setWorkspaceId] = useState('')
-  const [health, setHealth] = useState('Checking API')
+  const [health, setHealth] = useState(HEALTH_CHECKING)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
+  useEffect(() => {
+    const goOnline = () => setOnline(true)
+    const goOffline = () => setOnline(false)
+    window.addEventListener('online', goOnline)
+    window.addEventListener('offline', goOffline)
+    setOnline(navigator.onLine)
+    return () => {
+      window.removeEventListener('online', goOnline)
+      window.removeEventListener('offline', goOffline)
+    }
+  }, [])
   useEffect(() => {
     let active = true
     Promise.all([
       apiRequest<{ version: string }>('/api/health'),
       apiRequest<ReportTemplate[]>('/api/templates'),
       apiRequest<Workspace[]>('/api/workspaces'),
-    ]).then(([healthData, templateData, workspaceData]) => {
+    ]).then(([, templateData, workspaceData]) => {
       if (!active) return
-      setHealth(`API v${healthData.version}`)
+      setHealth(HEALTH_READY)
       setTemplates(templateData)
       setWorkspaces(workspaceData)
       setTemplateId(templateData[0]?.template_id ?? '')
       setWorkspaceId(workspaceData[0]?.case_id ?? '')
     }).catch(() => {
       if (!active) return
-      setHealth('API offline')
-      setError('Start the psychtool server, then reload to load templates and workspaces.')
+      const reachable = typeof navigator === 'undefined' || navigator.onLine
+      setHealth(reachable ? HEALTH_NOT_RUNNING : HEALTH_OFFLINE)
+      setError(initialLoadErrorMessage(reachable))
     }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [])
@@ -92,7 +115,7 @@ function App() {
             {workspaces.map((item) => <option key={item.case_id} value={item.case_id}>{item.case_id}</option>)}
           </select>
         </label>
-        <div className="system-status" role="status">{health}</div>
+        <div className="system-status" role="status">{online ? health : HEALTH_OFFLINE}</div>
       </div>
     </header>
     <div className="privacy-banner" role="note">{PRIVACY_BANNER}</div>
@@ -105,11 +128,12 @@ function App() {
           </select>
         </label>
       </section>
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {!online && <div className="error-banner" role="alert">{OFFLINE_MESSAGE}</div>}
+      {online && error && <div className="error-banner" role="alert">{error}</div>}
       {loading && <p role="status">Loading workspace…</p>}
       {!loading && !error && <CreateCasePanel onCreated={caseCreated} />}
       {workspaceId && template && <Workbench key={`${workspaceId}/${template.template_id}/${template.version}`} workspaceId={workspaceId} template={template} onBusyChange={setBusy} />}
-      {!loading && !error && !workspaceId && <section className="empty-workspace"><h3>Create a case to begin.</h3><p>Use the form above, or run <code>psychtool init &lt;path&gt; --case-id &lt;id&gt;</code> and point the server at it via <code>PSYCHTOOL_WORKSPACES_DIR</code>.</p></section>}
+      {!loading && !error && !workspaceId && <section className="empty-workspace"><h3>Create a case to begin.</h3><p>{EMPTY_WORKSPACE_HINT}</p></section>}
     </main>
   </div>
 }
@@ -470,8 +494,10 @@ function SectionEditor({ workspaceId, template, section, initial, claims, source
       setMessages((current) => ({ ...current, [section.id]: 'Section saved.' }))
     } catch (error) {
       if (alive.current) {
-        const detail = error instanceof ApiError ? error.serverMessage : null
-        setErrors((current) => ({ ...current, [section.id]: detail ?? 'Could not save the section. Check required text and reviewer, then try again.' }))
+        const failure = error instanceof ApiError
+          ? saveFailureMessage({ status: error.status, serverMessage: error.serverMessage })
+          : saveFailureMessage(null)
+        setErrors((current) => ({ ...current, [section.id]: failure }))
       }
     }
     finally { if (alive.current) { inFlight.current = false; setSaving(false); onBusyChange(false) } }
