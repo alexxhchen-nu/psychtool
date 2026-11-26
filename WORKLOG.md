@@ -650,3 +650,4 @@ R3-AC1、R10-AC2 中的匯出子句因 Q7 在 M1 不可行使；已證明隔離�
 - `bun run e2e`：33 passed（含新增 privacy e2e）；截圖差異 1440 0.69%、1280 0.92%、1024 1.57%（皆低於 2%）。
 - 抽查腳本：10 passed, 0 failed。
 - Mutation：矩陣測試名稱打錯、App.tsx 加入「is HIPAA compliant」、抽查種子插入編造摘錄，均使對應測試失敗後還原。
+- 全新 clone（`0ceba7d`）：pytest 890 passed；bun test 236 pass；build 通過；e2e 33 passed，截圖差異同上；抽查腳本 10 passed。

@@ -189,7 +189,11 @@ Grep of the ADRs and of tech-design / PRD (Working Backwards tree):
 
 ### Fresh clone
 
-To be filled after this commit is verified on a clean clone.
+Verified on a clean clone of `0ceba7d` (branch `pt-15-m1-acceptance`), 2026-11-25, America/Chicago:
+
+- `uv run --extra dev pytest -q`: **890 passed**.
+- `cd web && bun test && bun run build && bun run e2e`: **236 pass / 0 fail**, build passed, **33 e2e passed**. Screenshot diffs: 1440 0.69%, 1280 0.92%, 1024 1.57% (all under 2%).
+- `uv run --extra dev python scripts/spotcheck.py`: **10 passed, 0 failed, 10 items**.
 
 ### CI
 
