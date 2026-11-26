@@ -51,17 +51,23 @@ DRAFT_DIAGNOSIS_PHRASES: tuple[str, ...] = tuple(
 # Recommendation wording, used ONLY by the Summary guard. Stem and phrase
 # matching is literal, case-insensitive, and deliberately not a semantic
 # detector. The list is pending psychologist validation (待验证); see ADR 0021.
+# "refer" is not a bare stem: it is matched only as referral phrasing
+# (PT-23 / GROK-55). See _RECOMMENDATION_REFERRAL_RE and ADR 0021.
 RECOMMENDATION_STEMS: tuple[str, ...] = (
     "recommend",
     "advis",
     "suggest",
-    "refer",
 )
 RECOMMENDATION_SHOULD_PATTERNS: tuple[str, ...] = (
     "should be",
     "should receive",
     "should undergo",
     "should consider",
+)
+# Literal phrases restored in PT-23. "treatment plan" had slipped through
+# when the PT-12 follow-up switched to stems.
+RECOMMENDATION_PHRASES: tuple[str, ...] = (
+    "treatment plan",
 )
 _RECOMMENDATION_STEM_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(stem) for stem in RECOMMENDATION_STEMS) + r")\w*",
@@ -71,8 +77,20 @@ _RECOMMENDATION_SHOULD_RE = re.compile(
     r"\bshould\s+(?:be|receive|undergo|consider)\b",
     re.IGNORECASE,
 )
-# Kept as an alias of the stem list so existing importers do not break.
-RECOMMENDATION_PHRASES: tuple[str, ...] = RECOMMENDATION_STEMS
+# Referral phrasing only. "refer to", "refer her/him/them to", "referral
+# to/for", "should be referred", and past-tense "referred to/for". Up to
+# three words may sit between "refer" and "to"/"for" so "refer the family
+# to" is caught. "referred by", "for reference", and "the reference group"
+# do not match.
+_RECOMMENDATION_REFERRAL_RE = re.compile(
+    r"\b(?:"
+    r"refer(?:\s+\w+){0,3}\s+(?:to|for)"
+    r"|referral\s+(?:to|for)"
+    r"|should\s+be\s+referred"
+    r"|referred\s+(?:to|for)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 SUMMARY_DRAFT_REASON = "a Summary draft must not contain diagnostic or recommendation wording"
 DRAFT_FILTER_REASON = "draft text must not contain diagnostic wording or un-uploaded manual text"
@@ -309,6 +327,14 @@ def _diagnostic_fragment(text: str, uploaded_texts: Sequence[str]) -> str | None
 
 def _recommendation_fragment(text: str) -> str | None:
     match = _RECOMMENDATION_STEM_RE.search(text)
+    if match is not None:
+        return match.group(0)
+    lowered = text.casefold()
+    for phrase in RECOMMENDATION_PHRASES:
+        index = lowered.find(phrase)
+        if index >= 0:
+            return text[index : index + len(phrase)]
+    match = _RECOMMENDATION_REFERRAL_RE.search(text)
     if match is not None:
         return match.group(0)
     match = _RECOMMENDATION_SHOULD_RE.search(text)

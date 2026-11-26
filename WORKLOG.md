@@ -547,3 +547,26 @@ Alex 批准 PT-12 並要求三項跟進，寫在同一分支、同一 PR #14，�
 - 未開始 PT-22、PT-21 或 PT-13。
 - Export（M2／Q7）仍不做。
 - 建議用語詞表待心理師驗證；上述三句誤傷候選未放寬。
+
+## 2026-11-25 19:50 CST — PT-23：修正 Summary 建議用語攔截誤傷（GROK-55）
+
+Alex 於 19:39 CT 將 #14 合入 main（merge f92340f）。本卡只做兩處修正，Python 與 TypeScript 守衛同步，拒絕仍回 400，絕不改寫。
+
+### 變更
+
+- 恢復攔截字面短語 “treatment plan”。
+- 將 `refer` 從光禿詞幹收窄為轉介用語：`refer to`、`refer her/him/them to`、`refer … to/for`（中間最多三詞）、`referral to/for`、`should be referred`、`referred to/for`。因此 “for reference”“the reference group”“referred by her school” 可以通過。
+- 不改動 “the results suggest”“should be noted”“advisory”“suggestion”；ADR 0021 將這四類標為待心理師驗證（待验证）。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **855 passed**。
+- `cd web && bun test` → **226 passed / 0 fail**。
+- `cd web && bun run build` → 成功。
+- `cd web && bun run e2e` → **29 passed**。截圖差異：1440 **0.69%**、1280 **0.92%**、1024 **1.57%**，皆低於 2%。
+- 突變：拿掉 “treatment plan”；把 `refer` 改回光禿詞幹（Python 與 TS）——對應測試皆轉紅。
+
+### 未解決事項
+
+- “the results suggest”“should be noted”“advisory”“suggestion” 仍待心理師驗證。
+- 未開始 PT-22、PT-21 或 PT-13。

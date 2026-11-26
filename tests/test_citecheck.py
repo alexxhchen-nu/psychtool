@@ -233,22 +233,10 @@ def test_clinical_impressions_may_contain_diagnosis_wording(tmp_path):
     assert loaded.text == text
 
 
-# Ordinary factual wording that also matches the current stem / "should be"
-# rule. These are recorded as currently blocked so the list is not silently
-# loosened; they are listed for the psychologist (待验证). See ADR 0021.
-SUMMARY_FALSE_POSITIVE_CANDIDATES = (
-    "The results suggest a slower processing speed on this task.",
-    "She was referred by her school for this evaluation.",
-    "It should be noted that the session ran past the scheduled time.",
-)
-
-
 def test_summary_recommendation_stems_and_should_patterns_are_blocked():
     examples = (
         "I recommend weekly sessions with the school counselor.",
         "The notes advised a follow-up meeting next month.",
-        "A suggestion in the file is to repeat the timed task.",
-        "The team will refer the family to a community tutor.",
         "The student should be offered a quieter testing room.",
         "The student should receive extra time on written tasks.",
         "The student should undergo a hearing screen before the next visit.",
@@ -262,15 +250,69 @@ def test_summary_recommendation_stems_and_should_patterns_are_blocked():
         assert result.text == text
 
 
-def test_summary_false_positive_candidates_are_currently_blocked():
-    """Document current stem / 'should be' hits; do not loosen the rule here."""
-    for text in SUMMARY_FALSE_POSITIVE_CANDIDATES:
-        fragment = _recommendation_fragment(text)
-        assert fragment is not None, text
-        assert check_draft_text("summary", text) == SUMMARY_DRAFT_REASON, (text, fragment)
-        result = citecheck_text(section_id="summary", text=text)
-        assert result.blocked is True
-        assert result.text == text
+# PT-23 / GROK-55: one test per block case and per pass case. A blocked
+# draft is refused, never rewritten.
+SUMMARY_BLOCK_CASES = (
+    ("treatment plan", "A treatment plan is already on file from last year."),
+    ("refer to", "The team will refer to a community tutor."),
+    ("refer her to", "I will refer her to a community tutor."),
+    ("refer him to", "I will refer him to a community tutor."),
+    ("refer them to", "I will refer them to a community tutor."),
+    ("refer the family to", "The team will refer the family to a community tutor."),
+    ("refer for", "The team will refer for a community tutor evaluation."),
+    ("referral to", "A referral to a community tutor is already in the file."),
+    ("referral for", "A referral for a community tutor is already in the file."),
+    ("should be referred", "The student should be referred to a community tutor."),
+    ("referred to", "The student was referred to a community tutor."),
+    ("referred for", "The student was referred for a hearing screen."),
+)
+
+SUMMARY_PASS_CASES = (
+    ("for reference", "For reference, the session started at 9."),
+    ("the reference group", "The reference group scored in the mid range."),
+    ("referred by her school", "She was referred by her school for this evaluation."),
+)
+
+# Left unchanged in PT-23; still blocked and still 待验证. See ADR 0021.
+SUMMARY_STILL_BLOCKED_PENDING_VALIDATION = (
+    ("the results suggest", "The results suggest a slower processing speed on this task."),
+    ("should be noted", "It should be noted that the session ran past the scheduled time."),
+    ("advisory", "The advisory committee met last week."),
+    ("suggestion", "A suggestion in the file is to repeat the timed task."),
+)
+
+
+@pytest.mark.parametrize("label,text", SUMMARY_BLOCK_CASES, ids=[c[0] for c in SUMMARY_BLOCK_CASES])
+def test_summary_blocks_recommendation_case(label, text):
+    assert _recommendation_fragment(text) is not None, label
+    assert check_draft_text("summary", text) == SUMMARY_DRAFT_REASON
+    result = citecheck_text(section_id="summary", text=text)
+    assert result.blocked is True
+    assert result.detail == SUMMARY_DRAFT_REASON
+    assert result.text == text
+
+
+@pytest.mark.parametrize("label,text", SUMMARY_PASS_CASES, ids=[c[0] for c in SUMMARY_PASS_CASES])
+def test_summary_allows_non_referral_refer_wording(label, text):
+    assert _recommendation_fragment(text) is None, (label, _recommendation_fragment(text))
+    assert check_draft_text("summary", text) is None
+    result = citecheck_text(section_id="summary", text=text)
+    assert result.blocked is False
+    assert result.text == text
+
+
+@pytest.mark.parametrize(
+    "label,text",
+    SUMMARY_STILL_BLOCKED_PENDING_VALIDATION,
+    ids=[c[0] for c in SUMMARY_STILL_BLOCKED_PENDING_VALIDATION],
+)
+def test_summary_pending_validation_phrases_remain_blocked(label, text):
+    """Do not loosen these in PT-23; they stay 待验证 with the psychologist."""
+    assert _recommendation_fragment(text) is not None, label
+    assert check_draft_text("summary", text) == SUMMARY_DRAFT_REASON
+    result = citecheck_text(section_id="summary", text=text)
+    assert result.blocked is True
+    assert result.text == text
 
 
 def test_history_is_not_blocked_by_recommendation_wording():

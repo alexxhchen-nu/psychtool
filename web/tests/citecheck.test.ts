@@ -44,12 +44,81 @@ describe('summaryDraftBlocked', () => {
     expect(summaryDraftBlocked('Scores sit below the mid range on working memory.')).toBe(false)
   })
 
-  // Recorded current hits under Alex's stem / "should be" rule. Do not loosen
-  // the rule here; these are listed for psychologist validation (待验证).
-  test('currently flags ordinary factual wording that matches the stems', () => {
+  test('blocks treatment plan', () => {
+    expect(summaryDraftBlocked('A treatment plan is already on file from last year.')).toBe(true)
+  })
+
+  test('blocks refer to', () => {
+    expect(summaryDraftBlocked('The team will refer to a community tutor.')).toBe(true)
+  })
+
+  test('blocks refer her to', () => {
+    expect(summaryDraftBlocked('I will refer her to a community tutor.')).toBe(true)
+  })
+
+  test('blocks refer him to', () => {
+    expect(summaryDraftBlocked('I will refer him to a community tutor.')).toBe(true)
+  })
+
+  test('blocks refer them to', () => {
+    expect(summaryDraftBlocked('I will refer them to a community tutor.')).toBe(true)
+  })
+
+  test('blocks refer the family to', () => {
+    expect(summaryDraftBlocked('The team will refer the family to a community tutor.')).toBe(true)
+  })
+
+  test('blocks refer for', () => {
+    expect(summaryDraftBlocked('The team will refer for a community tutor evaluation.')).toBe(true)
+  })
+
+  test('blocks referral to', () => {
+    expect(summaryDraftBlocked('A referral to a community tutor is already in the file.')).toBe(true)
+  })
+
+  test('blocks referral for', () => {
+    expect(summaryDraftBlocked('A referral for a community tutor is already in the file.')).toBe(true)
+  })
+
+  test('blocks should be referred', () => {
+    expect(summaryDraftBlocked('The student should be referred to a community tutor.')).toBe(true)
+  })
+
+  test('blocks referred to', () => {
+    expect(summaryDraftBlocked('The student was referred to a community tutor.')).toBe(true)
+  })
+
+  test('blocks referred for', () => {
+    expect(summaryDraftBlocked('The student was referred for a hearing screen.')).toBe(true)
+  })
+
+  test('allows for reference', () => {
+    expect(summaryDraftBlocked('For reference, the session started at 9.')).toBe(false)
+  })
+
+  test('allows the reference group', () => {
+    expect(summaryDraftBlocked('The reference group scored in the mid range.')).toBe(false)
+  })
+
+  test('allows referred by her school', () => {
+    expect(summaryDraftBlocked('She was referred by her school for this evaluation.')).toBe(false)
+  })
+
+  // Left unchanged in PT-23; still blocked and still 待验证. See ADR 0021.
+  test('still flags the results suggest', () => {
     expect(summaryDraftBlocked('The results suggest a slower processing speed on this task.')).toBe(true)
-    expect(summaryDraftBlocked('She was referred by her school for this evaluation.')).toBe(true)
+  })
+
+  test('still flags should be noted', () => {
     expect(summaryDraftBlocked('It should be noted that the session ran past the scheduled time.')).toBe(true)
+  })
+
+  test('still flags advisory', () => {
+    expect(summaryDraftBlocked('The advisory committee met last week.')).toBe(true)
+  })
+
+  test('still flags suggestion', () => {
+    expect(summaryDraftBlocked('A suggestion in the file is to repeat the timed task.')).toBe(true)
   })
 })
 
