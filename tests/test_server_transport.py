@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from psychtool.config import load_config
 from psychtool.gateway.fake import FAKE_UNSOURCED_SENTENCE, fake_transport
 from psychtool.gateway.http import http_transport
+from psychtool.gateway.vertex import vertex_transport
 from psychtool.server.app import _select_transport, create_app
 from tests.conftest import build_client
 
@@ -123,6 +124,12 @@ def test_http_transport_requires_explicit_opt_in(monkeypatch):
     monkeypatch.setenv("PSYCHTOOL_TRANSPORT", "http")
     assert load_config().transport == "http"
     assert _select_transport(load_config()) is http_transport
+
+
+def test_vertex_transport_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("PSYCHTOOL_TRANSPORT", "vertex")
+    assert load_config().transport == "vertex"
+    assert _select_transport(load_config()) is vertex_transport
 
 
 def test_unknown_transport_value_falls_back_to_fake(monkeypatch):

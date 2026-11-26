@@ -10,7 +10,7 @@ from pathlib import Path
 import typer
 
 from psychtool.config import Config, load_config
-from psychtool.gateway.http import http_transport
+from psychtool.gateway.select import select_transport
 from psychtool.gateway.orchestrator import (
     ApprovalChoice,
     EgressApprovalRequired,
@@ -73,6 +73,11 @@ def _approval_choice(
     return SyntheticApproval(reason=approval_reason)
 
 
+def _cli_transport(config: Config, envelope: dict) -> str:
+    """Dispatch to the configured transport. Tests may monkeypatch this hook."""
+    return select_transport(config)(config, envelope)
+
+
 def _runner(
     config: Config,
     approval: ApprovalChoice,
@@ -80,7 +85,7 @@ def _runner(
     return EgressOrchestrator(
         config=config,
         approval=approval,
-        transport=http_transport,
+        transport=_cli_transport,
         on_prepared=_show_prepared_request,
     )
 

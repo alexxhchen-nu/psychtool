@@ -10,10 +10,12 @@ import json
 import urllib.request
 
 from psychtool.config import Config
+from psychtool.gateway.endpoints import refuse_ai_studio
 
 
 def http_transport(config: Config, envelope: dict) -> str:
     """POST the approved envelope unchanged to the configured endpoint."""
+    refuse_ai_studio(config.base_url)
     url = config.base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if config.api_key:

@@ -80,6 +80,7 @@ from psychtool.gateway.client import (
 )
 from psychtool.gateway.fake import fake_transport
 from psychtool.gateway.http import http_transport
+from psychtool.gateway.vertex import vertex_transport
 from psychtool.server.security import (
     LocalSecurityMiddleware,
     SecurityHeadersASGIMiddleware,
@@ -238,13 +239,17 @@ def _db_path() -> Path:
 def _select_transport(config: Config):
     """Pick the model transport from config; the offline fake is the default.
 
-    ``http_transport`` is reachable only through the explicit
-    ``PSYCHTOOL_TRANSPORT=http`` opt-in, so the default dev run, tests and the
-    e2e never open a socket. Every existing gateway check (approval hash,
-    send-once lock, data tier, output PII gate) runs before any transport.
+    ``http_transport`` and ``vertex_transport`` are reachable only through an
+    explicit opt-in (``PSYCHTOOL_TRANSPORT`` or ``PSYCHTOOL_PROFILE``), so the
+    default dev run, tests and the e2e never open a socket. Every existing
+    gateway check (approval hash, send-once lock, data tier, output PII gate)
+    runs before any transport. Google AI Studio endpoints are refused.
     """
+    # Bindings are module-level so tests can monkeypatch app.http_transport.
     if config.transport == "http":
         return http_transport
+    if config.transport == "vertex":
+        return vertex_transport
     return fake_transport
 
 
