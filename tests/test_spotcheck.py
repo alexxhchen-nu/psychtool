@@ -30,3 +30,14 @@ def test_spotcheck_cli_entrypoint_is_documented():
     text = script.read_text(encoding="utf-8")
     assert "psychtool.acceptance.spotcheck" in text
     assert "never writes a report export" in text
+
+
+def test_spotcheck_restores_process_environment(monkeypatch, capsys):
+    import os
+
+    monkeypatch.delenv("PSYCHTOOL_DB_PATH", raising=False)
+    monkeypatch.setenv("PSYCHTOOL_TRANSPORT", "sentinel-transport")
+    assert main() == 0
+    capsys.readouterr()
+    assert "PSYCHTOOL_DB_PATH" not in os.environ
+    assert os.environ["PSYCHTOOL_TRANSPORT"] == "sentinel-transport"

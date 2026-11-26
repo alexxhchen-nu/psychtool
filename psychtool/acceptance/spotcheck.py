@@ -423,14 +423,27 @@ def format_report(results: list[CheckResult]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _restore_env(previous: dict[str, str | None]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 def main(argv: list[str] | None = None) -> int:
     del argv  # no flags: always synthetic, always a throwaway database
-    with tempfile.TemporaryDirectory(prefix="psychtool-spotcheck-") as tmp:
-        db_path = Path(tmp) / "spotcheck.db"
-        client = _client(db_path)
-        with client:
-            seed_synthetic_cases(client)
-            results = run_checks(client)
+    keys = ("PSYCHTOOL_DB_PATH", "PSYCHTOOL_TRANSPORT", "PSYCHTOOL_DATA_TIER")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        with tempfile.TemporaryDirectory(prefix="psychtool-spotcheck-") as tmp:
+            db_path = Path(tmp) / "spotcheck.db"
+            client = _client(db_path)
+            with client:
+                seed_synthetic_cases(client)
+                results = run_checks(client)
+    finally:
+        _restore_env(previous)
     text = format_report(results)
     sys.stdout.write(text)
     return 0 if all(item.passed for item in results) else 1

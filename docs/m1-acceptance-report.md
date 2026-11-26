@@ -186,6 +186,7 @@ Grep of the ADRs and of tech-design / PRD (Working Backwards tree):
 - `bun run e2e`: **33 passed** (32 on `3a925cc` plus `web/e2e/privacy.e2e.ts`). Screenshot diffs: 1440 0.69%, 1280 0.92%, 1024 1.57% (all under 2%).
 - `uv run --extra dev python scripts/spotcheck.py`: **10 passed, 0 failed, 10 items**.
 - Mutations (each failed as expected, then restored): typo of `R1-AC1`'s pytest name in the matrix; an `is HIPAA compliant` string added to `web/src/App.tsx`; a fabricated evidence quote injected into the spot-check seed.
+- Follow-up: `scripts/spotcheck.py` now restores `PSYCHTOOL_DB_PATH` / `PSYCHTOOL_TRANSPORT` / `PSYCHTOOL_DATA_TIER` after it runs (`tests/test_spotcheck.py::test_spotcheck_restores_process_environment`). `pytest -q` on this follow-up: **891 passed**.
 
 ### Fresh clone
 
