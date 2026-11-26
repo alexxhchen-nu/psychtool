@@ -189,6 +189,13 @@ button:disabled, .primary-button:disabled, .secondary-button:disabled, .review-p
 .muted { color: var(--muted); font-size: 14px; }
 .save-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
 .saved-flash { color: var(--ok); font-size: 13px; font-weight: 600; }
+.saved-state { color: var(--muted); font-size: 13px; font-weight: 600; }
+.saved-state.dirty { color: var(--chk); }
+/* R9-AC3: sections the clinician writes are never sent to the model. */
+.clinician-authored-notice { margin: 18px 0; padding: 16px 18px; border: 1px solid var(--chk-bd); border-radius: var(--radius-control); background: var(--chk-bg); }
+.clinician-authored-notice h4 { margin: 0 0 8px; color: var(--ink); font: 700 16px/1.3 var(--font-body); }
+.clinician-authored-notice p { margin: 0; color: var(--ink2); font-size: 13px; line-height: 1.7; }
+.you-write-this { margin: 10px 0 0; color: var(--muted); font: 600 13px var(--font-data); }
 .review-gate { display: flex; gap: 12px; align-items: start; padding-top: 16px; border-top: 1px solid var(--line); }
 .gate-icon { display: none; }
 .review-gate strong { color: var(--ink); font-size: 13px; }

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { ApiError, approveEgress, getEgress, prepareEgress, sendEgress } from '../api'
+import { egressPrimaryStepActive } from '../section-editor'
 import {
   approvalInput,
   canPrepare,
@@ -26,6 +27,7 @@ interface Props {
   sourceRevision: number
   onGenerated: (text: string, claimIds: string[]) => void
   onBusyChange: (busy: boolean) => void
+  onPrimaryStepChange?: (active: boolean) => void
   disabled: boolean
 }
 
@@ -44,7 +46,7 @@ function errorStatus(error: unknown): number {
 
 export default function EgressReviewPanel({
   workspaceId, templateId, templateVersion, sectionId, sectionTitle, claimIds, sourceRevision,
-  onGenerated, onBusyChange, disabled,
+  onGenerated, onBusyChange, onPrimaryStepChange, disabled,
 }: Props) {
   const id = useId()
   const [state, setState] = useState<EgressState>(initialEgressState)
@@ -298,9 +300,19 @@ export default function EgressReviewPanel({
   const approvalReady = request !== null && approvalInput(request, confirmation) !== null
   const terminal = ['sent', 'output_blocked', 'uncertain_failure', 'send_interrupted'].includes(state.phase)
   const errorMessage = ['error', 'invalidated', 'output_blocked', 'uncertain_failure', 'send_interrupted'].includes(state.phase)
+  const primaryStepActive = egressPrimaryStepActive(state.phase, approvalReady, locked)
+
+  useEffect(() => {
+    onPrimaryStepChange?.(primaryStepActive)
+  }, [onPrimaryStepChange, primaryStepActive])
+  useEffect(() => {
+    return () => { onPrimaryStepChange?.(false) }
+    // Notify the parent once when this panel unmounts (section change or clinician-authored).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
-    <section className="egress-panel" aria-labelledby={`${id}-title`} aria-busy={busy}>
+    <section className="egress-panel" aria-labelledby={`${id}-title`} aria-busy={busy} data-testid="egress-panel" data-primary-step={primaryStepActive ? 'true' : 'false'}>
       <h3 id={`${id}-title`}>Model request for {sectionTitle}</h3>
       <p aria-live="polite"><strong>{phaseLabels[state.phase]}</strong></p>
       <p>Prepare freezes the exact model input. Review it, approve it, then send once. Generated text is not saved automatically.</p>

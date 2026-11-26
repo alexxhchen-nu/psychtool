@@ -84,6 +84,26 @@ def _prepare(client):
     return client.post("/api/workspaces/case-a/egress/prepare", json=_prepare_body())
 
 
+@pytest.mark.parametrize("section_id", ["clinical_impressions", "recommendations"])
+def test_prepare_refuses_clinician_authored_sections_without_writing_egress(
+    tmp_path, monkeypatch, section_id
+):
+    _workspace(tmp_path, monkeypatch)
+    _configure(monkeypatch, tmp_path)
+
+    body = _prepare_body() | {"section_id": section_id}
+    response = build_client(create_app()).post(
+        "/api/workspaces/case-a/egress/prepare", json=body
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "this section is written by the clinician and is not sent to the model"
+    }
+    store = SqliteStore(tmp_path / "psychtool.db")
+    assert store.case("case-a").list_egress_requests() == []
+
+
 def test_prepare_returns_review_preview_without_calling_transport(tmp_path, monkeypatch):
     _workspace(tmp_path, monkeypatch)
     _configure(monkeypatch, tmp_path)

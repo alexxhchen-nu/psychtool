@@ -472,3 +472,28 @@
 
 - 截圖「約定閾值」在 PT-03–PT-09 筆記中沒有寫下數字；本 PT 以 5% 為工作閾值，若另有約定需再對齊。
 - 未開始 PT-11 或 GROK-53。
+
+
+## 2026-11-25 17:55 CST — PT-11：章節編輯與保存（GROK-41 / R9）
+
+**執行模型**：chunk 1–2 為 deepseek-v4.1-flash-1017 via Grok Workhorse（kimi 週配額已用盡）。chunk 3（一個主按鈕、e2e 修補、ADR／README／WORKLOG）由 supervisor 在同一工作樹完成。
+
+### 變更
+
+- 視覺回歸約定閾值改為每視窗 **2%**（`THRESHOLD = 0.02`；ADR 0019 同步）。不把 `tech-design.md` 加入倉庫。
+- 臨床者專屬章節（`diagnostic_conclusion` / `recommendation`，本案為 Clinical Impressions 與 Recommendations）：`build_section_request_input` 在組 prompt 之前拒絕；準備 API 回固定 400。介面不畫模型請求面板，並提示「You write this」。她仍可勾選證據作為提示，但生成回呼不會寫入正文。
+- 普通章節：生成結果以未保存狀態進入編輯區，來源陳述保持勾選。保存列顯示 Unsaved changes / Saved。切換章節不丟未保存文字；保存後刷新或再打開內容一致。
+- 一個主按鈕：送出面板有可執行步驟時（Approve request / Send once）保存列退為次按鈕；否則可批准時主按鈕為 Approve section，有未保存修改時為 Save section。建立個案仍是次按鈕。不新增 Export。
+- 新增 `docs/adr/0020-r9-section-editing-and-saving.md`；三份 README 各加一行。
+
+### 實際核驗結果
+
+- `.venv/bin/python -m pytest -q` → **803 passed**。
+- `cd web && bun test` → **194 passed / 0 fail**。
+- `cd web && bun run build` → 成功。
+- `cd web && bun run e2e` → **24 passed**。對比：137 筆量測、**0 failures**，最低 3.69:1。截圖差異：1440 **0.71%**、1280 **0.94%**、1024 **1.54%**，皆低於 2%。
+
+### 未解決事項
+
+- 未開始 PT-12、PT-22 或 GROK-53／PT-21。
+- 句子級引用篩選（R9-AC1「每條事實性陳述應能指向所用證據」在本 PT 以章節上已勾選、可點開的來源陳述為準）。

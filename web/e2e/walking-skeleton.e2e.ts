@@ -85,11 +85,13 @@ test('walking skeleton: case -> paste -> evidence -> egress -> save -> reload', 
   // The fake text lands in the editor as unsaved text.
   const editor = page.getByLabel('Section text')
   await expect(editor).toHaveValue(/FAKE OFFLINE RESPONSE/)
-  await expect(page.getByText('Unsaved changes').or(page.getByText(/Generated draft is in the editor/))).toBeVisible()
+  await expect(page.getByTestId('save-state')).toHaveText('Unsaved changes')
+  await expect(page.getByText(/Generated draft is in the editor/)).toBeVisible()
 
   // 5. Save the section.
   await page.getByRole('button', { name: 'Save section' }).click()
   await expect(page.getByText('Section saved.')).toBeVisible()
+  await expect(page.getByTestId('save-state')).toHaveText('Saved')
 
   // 6. Reload: case, material, evidence and saved section text are still there.
   await page.reload()
