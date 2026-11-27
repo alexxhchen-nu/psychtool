@@ -65,29 +65,41 @@ cd web && bunx playwright install chromium && bun run e2e   # end-to-end (incl. 
 uv run --extra dev python scripts/spotcheck.py
 ```
 
-**Live Vertex chapter check (ADR 0024, opt-in only).** This is a separate manual path for generating one History chapter from the synthetic fixture `fixtures/case_a001` against Gemini on Vertex AI / Agent Platform, using Application Default Credentials. It does not change the `vertex` transport (ADR 0022 still does not probe ADC) and it still refuses the `real` profile. It never runs in CI. The default model is the GA id `gemini-4-hydrogen` ([Gemini 4 Hydrogen developer's guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen), retrieved 2026-11-27). The cost line uses Standard PayGo Global list prices from the [Agent Platform pricing page](https://cloud.google.com/model-garden/pricing) (retrieved 2026-11-27): US$1.50 / 1M input tokens and US$7.50 / 1M output tokens (response and reasoning). Other models or locations are reported as unknown.
+**Live Vertex chapter check (ADR 0024, opt-in only).** This is a separate manual path for generating one History chapter from the synthetic fixture `fixtures/case_a001` against Gemini on Vertex AI / Agent Platform, using Application Default Credentials. It does not change the `vertex` transport (ADR 0022 still does not probe ADC) and it still refuses the `real` profile. It never runs in CI. The default model is the GA id `gemini-4-hydrogen` ([Gemini 4 Hydrogen developer's guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen), retrieved 2026-11-27). The cost lines use Standard PayGo Global list prices from the [Agent Platform pricing page](https://cloud.google.com/model-garden/pricing) (retrieved 2026-11-27): US$1.50 / 1M input tokens and US$7.50 / 1M output tokens (response and reasoning). Other models or locations are reported as unknown. The summary prints a pre-call worst-case cost at the output cap, then the actual cost from reported usage. The generated chapter is written to the gitignored file `local-data/live-vertex/case-a001-history.txt` by default, and the absolute path is printed. Override the path with `--output` or `PSYCHTOOL_LIVE_VERTEX_OUTPUT`. The default output cap is 8192 tokens and the default request timeout is 120 seconds (`--max-output-tokens`, `--timeout-seconds`, or the matching environment variables); both are passed to the google-genai call. A truncated or timed-out response is a FAIL, and the citation and wording checks still run on whatever text came back.
 
-On Windows, after installing the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install-sdk#windows):
+If the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install-sdk#windows) is not installed yet, install it and run `gcloud auth application-default login --project fb-ailogic26vrt-3252`. After ADC login is already done, start from cloning or updating this branch:
 
-```bat
-gcloud auth application-default login --project fb-ailogic26vrt-3252
-```
-
-PowerShell:
+PowerShell (existing clone):
 
 ```powershell
+git fetch origin
+git checkout pt-24-live-vertex-chapter
+git pull origin pt-24-live-vertex-chapter
 $env:PSYCHTOOL_LIVE_VERTEX = "1"
 uv run --extra live psychtool-live-vertex --opt-in
 ```
 
-Command Prompt:
+PowerShell (fresh clone):
+
+```powershell
+git clone https://github.com/alexxhchen-nu/psychtool.git
+cd psychtool
+git checkout pt-24-live-vertex-chapter
+$env:PSYCHTOOL_LIVE_VERTEX = "1"
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+Command Prompt (existing clone):
 
 ```bat
+git fetch origin
+git checkout pt-24-live-vertex-chapter
+git pull origin pt-24-live-vertex-chapter
 set PSYCHTOOL_LIVE_VERTEX=1
 uv run --extra live psychtool-live-vertex --opt-in
 ```
 
-Both the environment flag and `--opt-in` are required. Optional flags: `--project`, `--location`, `--model`. The same command also exists as `uv run --extra live python scripts/live_vertex_chapter.py --opt-in`.
+The environment flag and `--opt-in` are both required. Optional flags: `--project`, `--location`, `--model`, `--output`, `--max-output-tokens`, `--timeout-seconds`. Equivalent command: `uv run --extra live python scripts/live_vertex_chapter.py --opt-in`.
 
 <div id="first-workflow"></div>
 <p align="center">

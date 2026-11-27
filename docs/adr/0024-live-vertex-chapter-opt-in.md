@@ -13,7 +13,10 @@
 - 預設專案 `fb-ailogic26vrt-3252`、預設區域 `global`，皆可由環境變數或旗標覆寫。設定裡不硬編碼任何機密。
 - 產出仍走既有的逐句核引用（`citecheck_text`）與用語攔截（`check_draft_text`）。結束時列印 cited／uncited 句數、攔截結果、token 用量，以及費用估計。
 - 費用估計採用官方 [Agent Platform / Model Garden 定價頁](https://cloud.google.com/model-garden/pricing)（2026-11-27 查閱）中 Gemini 4 Hydrogen 的 **Standard PayGo、Global** 標價：輸入每百萬 token 1.50 美元，輸出（含回應與推理）每百萬 token 7.50 美元。同一頁另有較高與較低的表（看起來像 Priority 與 Batch），本路徑不猜測那些費率；若模型或區域不是上述組合，估計標為 unknown。
-- 此命令**不在 CI 執行**。`google-genai`（`>= 2.34.0`）是可選 extra `live`，預設測試與 CI 不安裝它。離線測試以注入的假生成函數覆蓋設定解析、雙重選擇加入、`real` 檔拒絕、摘要算術，以及引用／攔截被套用。
+- 生成的章節文字寫入本機檔案，並列印絕對路徑。預設路徑為已被 gitignore 的 `local-data/live-vertex/case-a001-history.txt`，可用 `--output` 或 `PSYCHTOOL_LIVE_VERTEX_OUTPUT` 覆寫。若目標在倉庫內且不被 gitignore，寫入會被拒絕，以免檔案進入 git。
+- 呼叫一律帶上輸出上限與請求逾時：預設 `max_output_tokens=8192`、逾時 120 秒，可用旗標或環境變數覆寫（`--max-output-tokens`／`PSYCHTOOL_LIVE_VERTEX_MAX_OUTPUT_TOKENS`，`--timeout-seconds`／`PSYCHTOOL_LIVE_VERTEX_TIMEOUT_SECONDS`）。這兩個值會傳入 google-genai 的 `GenerateContentConfig.max_output_tokens` 與 `HttpOptions.timeout`（毫秒）。為避免 SDK 預設最多 5 次嘗試把上限與逾時放大，本路徑將 `HttpRetryOptions.attempts` 設為 1（官方說明：0 或 1 表示不重試）。
+- 摘要同時列出呼叫前的最壞費用（輸入依 4 字元／token 估算，輸出按上限計）以及實際 usage 的費用。若模型因觸及 `max_output_tokens` 而截斷，或請求逾時，結果為 FAIL，但仍對已收到的文字（可能為空）套用引用與用語攔截。
+- 此命令**不在 CI 執行**。`google-genai`（`>= 2.34.0`）是可選 extra `live`，預設測試與 CI 不安裝它。離線測試以注入的假生成函數覆蓋設定解析、雙重選擇加入、`real` 檔拒絕、摘要算術、上限接線、輸出檔寫入，以及引用／攔截被套用（含截斷與逾時）。
 
 ## 與 ADR 0022 的關係
 

@@ -681,3 +681,14 @@ Alex 今日批准本卡。PR #18（PT-15）已合入 main（merge 4a3d57f）。�
 - `bun run e2e`：33 passed；截圖差異 1440 0.71%、1280 0.94%、1024 1.54%（皆低於 2%）。
 - 抽查腳本：10 passed, 0 failed。
 - Mutation：去掉環境旗標閘門、把費用分母改為 1_000，對應測試均失敗後還原。
+
+---
+
+## 2026-11-27 12:25 CST — PT-24 補充：章節輸出檔與費用／大小上限（PR #19）
+
+Alex 批准在同一 PR 上補充兩項，不合併。仍未對 Vertex 或 Gemini 發出即時呼叫，未尋找或使用任何 Google Cloud 憑證。
+
+- 生成的章節文字（僅合成 A-001）寫入本機檔案，並列印絕對路徑。預設 `local-data/live-vertex/case-a001-history.txt`（已 gitignore）；可用 `--output` 或 `PSYCHTOOL_LIVE_VERTEX_OUTPUT` 覆寫。倉庫內未被忽略的路徑會被拒絕。
+- 新增可設定的 `max_output_tokens`（預設 8192）與請求逾時（預設 120 秒），並傳入 google-genai。摘要列出呼叫前依上限估算的最壞費用，以及實際 usage 的費用。截斷或逾時為 FAIL，但仍對已收到的文字套用引用與攔截。SDK 重試次數設為 1，以免預設 5 次嘗試放大上限。
+- 離線測試已覆蓋上限接線、輸出檔寫入、截斷與逾時。Mutation：拿掉 `sdk_generate_config` 的 `max_output_tokens`、把寫入改為空字串，對應測試均失敗後還原。
+- 三份 README（Windows 步驟改為在已完成 ADC 登入後，從克隆或更新本分支開始）與 ADR 0024 已更新。

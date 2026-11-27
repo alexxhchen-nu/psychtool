@@ -183,6 +183,21 @@ def live_vertex_chapter_cmd(
     fixture: str = typer.Option(
         None, "--fixture", help="Synthetic fixture case directory"
     ),
+    output: str = typer.Option(
+        None,
+        "--output",
+        help="File or directory for the generated chapter text",
+    ),
+    max_output_tokens: int = typer.Option(
+        None,
+        "--max-output-tokens",
+        help="Output-token cap sent to the model (default: 8192)",
+    ),
+    timeout_seconds: int = typer.Option(
+        None,
+        "--timeout-seconds",
+        help="Request timeout in seconds (default: 120)",
+    ),
 ):
     """Generate one History chapter from the synthetic fixture (live, opt-in).
 
@@ -199,12 +214,19 @@ def live_vertex_chapter_cmd(
         run_live_chapter,
     )
 
-    config = parse_live_config(
-        project=project,
-        location=location,
-        model=model,
-        opt_in=opt_in,
-    )
+    try:
+        config = parse_live_config(
+            project=project,
+            location=location,
+            model=model,
+            opt_in=opt_in,
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
+            output=output,
+        )
+    except LiveChapterError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2) from None
     fixture_dir = Path(fixture) if fixture else default_fixture_dir()
     try:
         result = run_live_chapter(
@@ -216,7 +238,7 @@ def live_vertex_chapter_cmd(
         typer.echo(f"refused: {exc}", err=True)
         raise typer.Exit(code=2) from None
     typer.echo(format_summary(result))
-    if result.guard_blocked:
+    if result.status != "PASS":
         raise typer.Exit(code=1)
 
 
