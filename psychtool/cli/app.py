@@ -170,6 +170,78 @@ def import_json_cmd(
     typer.echo(f"imported case {case_id} into {db_path}")
 
 
+@app.command("live-vertex-chapter")
+def live_vertex_chapter_cmd(
+    opt_in: bool = typer.Option(
+        False,
+        "--opt-in",
+        help="Explicit opt-in; required together with PSYCHTOOL_LIVE_VERTEX=1",
+    ),
+    project: str = typer.Option(None, "--project", help="Google Cloud project id"),
+    location: str = typer.Option(None, "--location", help="Vertex AI location"),
+    model: str = typer.Option(None, "--model", help="Gemini model id"),
+    fixture: str = typer.Option(
+        None, "--fixture", help="Synthetic fixture case directory"
+    ),
+    output: str = typer.Option(
+        None,
+        "--output",
+        help="File or directory for the generated chapter text",
+    ),
+    max_output_tokens: int = typer.Option(
+        None,
+        "--max-output-tokens",
+        help="Output-token cap sent to the model (default: 8192)",
+    ),
+    timeout_seconds: int = typer.Option(
+        None,
+        "--timeout-seconds",
+        help="Request timeout in seconds (default: 120)",
+    ),
+):
+    """Generate one History chapter from the synthetic fixture (live, opt-in).
+
+    Needs PSYCHTOOL_LIVE_VERTEX=1 in the environment and --opt-in on the
+    command line. Any ``real`` profile or data tier is refused even then
+    (ADR 0024). The SDK comes from the optional ``live`` extra.
+    """
+    from psychtool.live.vertex_chapter import (
+        LiveChapterError,
+        default_fixture_dir,
+        format_summary,
+        live_generate,
+        parse_live_config,
+        run_live_chapter,
+    )
+
+    try:
+        config = parse_live_config(
+            project=project,
+            location=location,
+            model=model,
+            opt_in=opt_in,
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
+            output=output,
+        )
+    except LiveChapterError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+    fixture_dir = Path(fixture) if fixture else default_fixture_dir()
+    try:
+        result = run_live_chapter(
+            config=config,
+            fixture_dir=fixture_dir,
+            generate=live_generate,
+        )
+    except LiveChapterError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+    typer.echo(format_summary(result))
+    if result.status != "PASS":
+        raise typer.Exit(code=1)
+
+
 claims_app = typer.Typer()
 app.add_typer(claims_app, name="claims")
 

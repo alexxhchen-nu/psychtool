@@ -15,10 +15,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
+# The live Vertex chapter path (ADR 0024) needs the official google-genai SDK.
+# It stays optional so the default test run and CI never install it.
+live = ["google-genai>=2.34.0"]
 
 [project.scripts]
 psychtool = "psychtool.cli.app:app"
 psychtool-server = "psychtool.server.main:main"
+psychtool-live-vertex = "psychtool.live.vertex_chapter:main"
 
 [build-system]
 requires = ["setuptools>=68"]

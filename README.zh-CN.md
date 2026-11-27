@@ -65,6 +65,42 @@ cd web && bunx playwright install chromium && bun run e2e   # 端到端（含 se
 uv run --extra dev python scripts/spotcheck.py
 ```
 
+**即时 Vertex 章节检查（ADR 0024，仅选择加入）。** 这是一条独立的本机手动路径：只用合成夹具 `fixtures/case_a001`，经 Application Default Credentials 对 Vertex AI / Agent Platform 上的 Gemini 生成一章 History。它不改变既有的 `vertex` 传输层（ADR 0022 仍不探测 ADC），且仍拒绝 `real` 档。CI 从不执行它。默认模型是 GA 型号 ID `gemini-4-hydrogen`（[Gemini 4 Hydrogen 开发者指南](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen)，2026-11-27 查阅）。费用行使用 [Agent Platform 定价页](https://cloud.google.com/model-garden/pricing)（2026-11-27 查阅）的 Standard PayGo Global 标价：输入每百万 token 1.50 美元，输出（含回复与推理）每百万 token 7.50 美元。其他模型或区域标为 unknown。摘要会打印调用前按输出上限估算的最坏费用，以及实际 usage 的费用。默认会把生成的章节文字写入已被 gitignore 的 `local-data/live-vertex/case-a001-history.txt`，并打印绝对路径；可用 `--output` 或 `PSYCHTOOL_LIVE_VERTEX_OUTPUT` 覆盖。默认输出上限为 8192 token、请求超时 120 秒（`--max-output-tokens`、`--timeout-seconds`，或对应环境变量）；两者都会传给 google-genai。若回应被截断或超时，结果为 FAIL，但仍对已收到的文字套用引用与用语拦截。
+
+若尚未安装 [Google Cloud SDK](https://cloud.google.com/sdk/docs/install-sdk#windows)，先安装并执行 `gcloud auth application-default login --project fb-ailogic26vrt-3252`。已完成 ADC 登录时，从克隆或更新本分支开始：
+
+PowerShell（已有本地仓库）：
+
+```powershell
+git fetch origin
+git checkout pt-24-live-vertex-chapter
+git pull origin pt-24-live-vertex-chapter
+$env:PSYCHTOOL_LIVE_VERTEX = "1"
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+PowerShell（从头克隆）：
+
+```powershell
+git clone https://github.com/alexxhchen-nu/psychtool.git
+cd psychtool
+git checkout pt-24-live-vertex-chapter
+$env:PSYCHTOOL_LIVE_VERTEX = "1"
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+命令提示符（已有本地仓库）：
+
+```bat
+git fetch origin
+git checkout pt-24-live-vertex-chapter
+git pull origin pt-24-live-vertex-chapter
+set PSYCHTOOL_LIVE_VERTEX=1
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+环境旗标与 `--opt-in` 必须同时具备。可选旗标：`--project`、`--location`、`--model`、`--output`、`--max-output-tokens`、`--timeout-seconds`。等价命令：`uv run --extra live python scripts/live_vertex_chapter.py --opt-in`。
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">
