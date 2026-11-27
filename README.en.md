@@ -65,6 +65,30 @@ cd web && bunx playwright install chromium && bun run e2e   # end-to-end (incl. 
 uv run --extra dev python scripts/spotcheck.py
 ```
 
+**Live Vertex chapter check (ADR 0024, opt-in only).** This is a separate manual path for generating one History chapter from the synthetic fixture `fixtures/case_a001` against Gemini on Vertex AI / Agent Platform, using Application Default Credentials. It does not change the `vertex` transport (ADR 0022 still does not probe ADC) and it still refuses the `real` profile. It never runs in CI. The default model is the GA id `gemini-4-hydrogen` ([Gemini 4 Hydrogen developer's guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen), retrieved 2026-11-27). The cost line uses Standard PayGo Global list prices from the [Agent Platform pricing page](https://cloud.google.com/model-garden/pricing) (retrieved 2026-11-27): US$1.50 / 1M input tokens and US$7.50 / 1M output tokens (response and reasoning). Other models or locations are reported as unknown.
+
+On Windows, after installing the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install-sdk#windows):
+
+```bat
+gcloud auth application-default login --project fb-ailogic26vrt-3252
+```
+
+PowerShell:
+
+```powershell
+$env:PSYCHTOOL_LIVE_VERTEX = "1"
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+Command Prompt:
+
+```bat
+set PSYCHTOOL_LIVE_VERTEX=1
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+Both the environment flag and `--opt-in` are required. Optional flags: `--project`, `--location`, `--model`. The same command also exists as `uv run --extra live python scripts/live_vertex_chapter.py --opt-in`.
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">

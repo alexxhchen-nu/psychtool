@@ -653,3 +653,31 @@ R3-AC1、R10-AC2 中的匯出子句因 Q7 在 M1 不可行使；已證明隔離�
 - 全新 clone（`0ceba7d`）：pytest 890 passed；bun test 236 pass；build 通過；e2e 33 passed，截圖差異同上；抽查腳本 10 passed。
 - 後續：抽查腳本結束後還原 `PSYCHTOOL_*` 環境變數（避免污染同進程測試）；pytest 891 passed。
 - CI（`cd2abb7`）綠：push https://github.com/alexxhchen-nu/psychtool/actions/runs/45749449296 ；pull_request https://github.com/alexxhchen-nu/psychtool/actions/runs/45749454118 。
+
+---
+
+## 2026-11-27 12:06 CST — PT-24：即時 Vertex 章節檢查（GROK-56）
+
+Alex 今日批准本卡。PR #18（PT-15）已合入 main（merge 4a3d57f）。本分支自最新 origin/main 拉出。Workhorse（default / MiniMax-M3.1-Flash）於約 5 分鐘超時前寫出核心模組與 29 項離線測試，但未來得及補 ADR／README／WORKLOG，且因本機同時切了功能分支被標為 integrity_violation；由 supervisor 審閱、修補並補齊文件後完成。從未對 Vertex 或 Gemini 發出即時呼叫，未尋找或使用任何 Google Cloud 憑證，未開始 PT-21／PT-22。ADR 0022 的 `real` 檔拒絕與「不探測 ADC」規則未改。
+
+### 變更
+
+- 新增獨立、雙重選擇加入的本機路徑（ADR 0024）：須同時有 `PSYCHTOOL_LIVE_VERTEX=1` 與 `--opt-in`；`profile` 或 `data_tier` 為 `real` 時即使選擇加入也拒絕；只使用合成夾具 `fixtures/case_a001`。
+- 命令：`uv run --extra live psychtool-live-vertex --opt-in`（亦有 `scripts/live_vertex_chapter.py` 與 `psychtool live-vertex-chapter`）。驗證走 Application Default Credentials；可選 extra `live`（`google-genai>=2.34.0`），CI 不安裝、不執行即時呼叫。
+- 預設模型 `gemini-4-hydrogen`（官方 GA ID）、專案 `fb-ailogic26vrt-3252`、區域 `global`，皆可由環境變數或旗標覆寫。產出套用既有 citecheck 與用語攔截，並列印 cited／uncited、攔截結果、token 與費用估計。
+- 費用估計取自官方 Model Garden 定價頁的 Standard PayGo Global 標價（輸入 1.50／輸出 7.50 美元每百萬 token，2026-11-27 查閱）；其他模型或區域標為 unknown。
+- 離線測試 `tests/test_live_vertex_chapter.py`（29 項）：設定解析、雙重選擇加入、`real` 拒絕仍成立、摘要算術、攔截與引用被套用。既有 Vertex 輸送層仍不探測 ADC。
+- 三份 README（含 Windows：安裝 gcloud、ADC login、PowerShell 與 cmd 設環境變數、一條命令）與本 WORKLOG 已更新。
+
+### 未驗證
+
+- 以真實 ADC 對 Vertex 發出「生成一章」的呼叫本身，須由 Alex 在其 Windows 電腦上自行執行。本卡與 CI 均未發出該呼叫。
+
+### 驗證（本機工作樹）
+
+- `pytest -q`：920 passed（main 上 891，加上 29 項離線 live-chapter 測試）。
+- `cd web && bun test`：236 pass / 0 fail。
+- `bun run build`：通過。
+- `bun run e2e`：33 passed；截圖差異 1440 0.71%、1280 0.94%、1024 1.54%（皆低於 2%）。
+- 抽查腳本：10 passed, 0 failed。
+- Mutation：去掉環境旗標閘門、把費用分母改為 1_000，對應測試均失敗後還原。

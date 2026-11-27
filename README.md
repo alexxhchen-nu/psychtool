@@ -65,6 +65,30 @@ cd web && bunx playwright install chromium && bun run e2e   # 端到端（含 se
 uv run --extra dev python scripts/spotcheck.py
 ```
 
+**即時 Vertex 章節檢查（ADR 0024，僅選擇加入）。** 這是一條獨立的本機手動路徑：只用合成夾具 `fixtures/case_a001`，經 Application Default Credentials 對 Vertex AI / Agent Platform 上的 Gemini 生成一章 History。它不改變既有的 `vertex` 輸送層（ADR 0022 仍不探測 ADC），且仍拒絕 `real` 檔。CI 從不執行它。預設模型是 GA 型號 ID `gemini-4-hydrogen`（[Gemini 4 Hydrogen 開發者指南](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-hydrogen)，2026-11-27 查閱）。費用列使用 [Agent Platform 定價頁](https://cloud.google.com/model-garden/pricing)（2026-11-27 查閱）的 Standard PayGo Global 標價：輸入每百萬 token 1.50 美元，輸出（含回應與推理）每百萬 token 7.50 美元。其他模型或區域標為 unknown。
+
+在 Windows 上，先安裝 [Google Cloud SDK](https://cloud.google.com/sdk/docs/install-sdk#windows)，然後：
+
+```bat
+gcloud auth application-default login --project fb-ailogic26vrt-3252
+```
+
+PowerShell：
+
+```powershell
+$env:PSYCHTOOL_LIVE_VERTEX = "1"
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+命令提示字元：
+
+```bat
+set PSYCHTOOL_LIVE_VERTEX=1
+uv run --extra live psychtool-live-vertex --opt-in
+```
+
+環境旗標與 `--opt-in` 必須同時具備。可選旗標：`--project`、`--location`、`--model`。等價命令：`uv run --extra live python scripts/live_vertex_chapter.py --opt-in`。
+
 <div id="first-workflow"></div>
 <p align="center">
   <img src="./assets/readme/sec-03-first-workflow.svg" width="100%" alt="03 · 首个工作流 / FIRST WORKFLOW">
