@@ -388,6 +388,7 @@ def live_generate(config: LiveVertexConfig, prompt: str) -> LiveResponse:
     ``GOOGLE_GENAI_USE_ENTERPRISE`` for Agent Platform; it is applied
     for this call only and then restored.
     """
+    check_live_gate(config)
     from google import genai
 
     previous = os.environ.get("GOOGLE_GENAI_USE_ENTERPRISE")
@@ -450,77 +451,82 @@ def run_live_chapter(
         )
     clinician_authored = is_clinician_authored_section(section)
 
-    base = (
-        Path(workdir)
-        if workdir is not None
-        else Path(tempfile.mkdtemp(prefix="psychtool-live-"))
-    )
-    workspace = prepare_workspace(Path(fixture_dir), base / "workspace")
+    owned: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is not None:
+        base = Path(workdir)
+    else:
+        owned = tempfile.TemporaryDirectory(prefix="psychtool-live-")
+        base = Path(owned.name)
+    try:
+        workspace = prepare_workspace(Path(fixture_dir), base / "workspace")
 
-    materials = list_materials(workspace)
-    rows = extract_evidence(workspace, case_id)
-    claim_ids = build_claims(workspace, materials)
-    if not claim_ids:
-        raise LiveCaseRefused(
-            f"{fixture_dir} carries no evidence-backed statements to write from"
+        materials = list_materials(workspace)
+        rows = extract_evidence(workspace, case_id)
+        claim_ids = build_claims(workspace, materials)
+        if not claim_ids:
+            raise LiveCaseRefused(
+                f"{fixture_dir} carries no evidence-backed statements to write from"
+            )
+
+        prompt, _source_refs = build_section_request_input(
+            workspace,
+            template_id=template_id,
+            template_version=template.version,
+            section_id=section_id,
+            claim_ids=claim_ids,
+            instructions=instructions,
         )
 
-    prompt, _source_refs = build_section_request_input(
-        workspace,
-        template_id=template_id,
-        template_version=template.version,
-        section_id=section_id,
-        claim_ids=claim_ids,
-        instructions=instructions,
-    )
+        response = generate(config, prompt)
 
-    response = generate(config, prompt)
-
-    texts = uploaded_texts(workspace)
-    evidence = sentence_evidence(rows)
-    check = citecheck_text(
-        section_id=section_id,
-        text=response.text,
-        evidence=evidence,
-        uploaded_texts=texts,
-        clinician_authored=clinician_authored,
-        title=section.title,
-    )
-    wording_reason = check_draft_text(
-        section_id,
-        response.text,
-        texts,
-        clinician_authored=clinician_authored,
-        title=section.title,
-    )
-    if check.blocked:
-        guard_reason = check.detail or wording_reason or "citation check blocked"
-    else:
-        guard_reason = wording_reason
-    cited = sum(1 for sentence in check.sentences if sentence.evidence_ids)
-    total = len(check.sentences)
-    return LiveChapterResult(
-        case_id=case_id,
-        section_id=section_id,
-        project=config.project,
-        location=config.location,
-        model=config.model,
-        text=response.text,
-        total_sentences=total,
-        cited_sentences=cited,
-        uncited_sentences=total - cited,
-        guard_blocked=guard_reason is not None,
-        guard_reason=guard_reason,
-        prompt_tokens=response.prompt_tokens,
-        output_tokens=response.output_tokens,
-        total_tokens=response.total_tokens,
-        cost=estimate_cost(
-            model=config.model,
+        texts = uploaded_texts(workspace)
+        evidence = sentence_evidence(rows)
+        check = citecheck_text(
+            section_id=section_id,
+            text=response.text,
+            evidence=evidence,
+            uploaded_texts=texts,
+            clinician_authored=clinician_authored,
+            title=section.title,
+        )
+        wording_reason = check_draft_text(
+            section_id,
+            response.text,
+            texts,
+            clinician_authored=clinician_authored,
+            title=section.title,
+        )
+        if check.blocked:
+            guard_reason = check.detail or wording_reason or "citation check blocked"
+        else:
+            guard_reason = wording_reason
+        cited = sum(1 for sentence in check.sentences if sentence.evidence_ids)
+        total = len(check.sentences)
+        return LiveChapterResult(
+            case_id=case_id,
+            section_id=section_id,
+            project=config.project,
             location=config.location,
+            model=config.model,
+            text=response.text,
+            total_sentences=total,
+            cited_sentences=cited,
+            uncited_sentences=total - cited,
+            guard_blocked=guard_reason is not None,
+            guard_reason=guard_reason,
             prompt_tokens=response.prompt_tokens,
             output_tokens=response.output_tokens,
-        ),
-    )
+            total_tokens=response.total_tokens,
+            cost=estimate_cost(
+                model=config.model,
+                location=config.location,
+                prompt_tokens=response.prompt_tokens,
+                output_tokens=response.output_tokens,
+            ),
+        )
+    finally:
+        if owned is not None:
+            owned.cleanup()
 
 
 def format_summary(result: LiveChapterResult) -> str:

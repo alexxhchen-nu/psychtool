@@ -480,3 +480,9 @@ def test_the_existing_vertex_transport_still_refuses_adc(monkeypatch):
 
     with pytest.raises(VertexAuthError, match="are not probed"):
         vertex_transport(config, {"model": "gemini-2.0-flash", "messages": []})
+
+
+
+def test_live_generate_refuses_before_importing_the_sdk():
+    with pytest.raises(LiveOptInError, match="PSYCHTOOL_LIVE_VERTEX"):
+        live_generate(_config(env_opt_in=False, cli_opt_in=True), "do not call the model")
